@@ -53,6 +53,16 @@
         </div>
         <div class="topbar-actions">
           <span class="who">You are <strong id="who-name"></strong></span>
+          <div class="notify">
+            <button id="notify-btn" class="btn btn-quiet" type="button" aria-expanded="false" aria-controls="notify-panel">Notifications<span id="notify-count" class="notify-count" hidden></span></button>
+            <div id="notify-panel" class="notify-panel" hidden>
+              <div class="notify-head">
+                <h2>Assigned to you</h2>
+                <button id="notify-read-all" class="link-btn" type="button">Mark all read</button>
+              </div>
+              <ul id="notify-list" class="notify-list"></ul>
+            </div>
+          </div>
           <button id="leave-btn" class="btn btn-quiet" type="button">Leave</button>
           <button id="add-btn" class="btn btn-primary" type="button">Add task</button>
         </div>
@@ -88,85 +98,16 @@
             <input id="quick-title" class="quick-input" type="text" maxlength="200" placeholder="Add a task" aria-label="Add a task" autocomplete="off">
             <button id="quick-submit" class="btn btn-primary btn-small" type="submit">Add</button>
           </div>
-          <div class="quick-hint" role="cell">Type a task and press Enter, then fill in its row. Drag a row by its dark cell to reorder it.</div>
+          <div class="quick-hint" role="cell">Type a task and press Enter. Click a task to open it, or drag its dark cell to reorder.</div>
         </form>
       </div>
     </main>
     <datalist id="people-list"></datalist>
   </div>
 
-  <!-- Add a task with every field, or see a task's details and updates -->
-  <dialog id="task-dialog" class="dialog">
-    <form id="task-form" novalidate>
-      <header class="dialog-head">
-        <h2 id="dialog-title">Add task</h2>
-        <button id="dialog-close" class="icon-btn" type="button" aria-label="Close">&times;</button>
-      </header>
-
-      <div class="field">
-        <label class="label" for="task-title">Task</label>
-        <input id="task-title" class="input" type="text" maxlength="200" autocomplete="off">
-      </div>
-
-      <div class="field">
-        <label class="label" for="task-details">Details <span class="optional">optional</span></label>
-        <textarea id="task-details" class="input" rows="2" maxlength="4000"></textarea>
-      </div>
-
-      <div class="field-row">
-        <div class="field">
-          <label class="label" for="task-assignee">Assign to <span class="optional">optional</span></label>
-          <input id="task-assignee" class="input" type="text" maxlength="60" list="people-list" autocomplete="off">
-        </div>
-        <div class="field">
-          <label class="label" for="task-deadline">Deadline <span class="optional">optional</span></label>
-          <input id="task-deadline" class="input" type="date">
-        </div>
-      </div>
-
-      <fieldset class="field">
-        <legend class="label">Urgency</legend>
-        <div class="segmented">
-          <label><input id="urgency-low" type="radio" name="urgency" value="low"><span>Low</span></label>
-          <label><input id="urgency-normal" type="radio" name="urgency" value="normal"><span>Normal</span></label>
-          <label><input id="urgency-high" type="radio" name="urgency" value="high"><span>High</span></label>
-          <label><input id="urgency-critical" type="radio" name="urgency" value="critical"><span>Critical</span></label>
-        </div>
-      </fieldset>
-
-      <div class="field-row">
-        <div class="field">
-          <label class="label" for="task-status">Status</label>
-          <select id="task-status" class="input"></select>
-        </div>
-        <div class="field">
-          <label class="label" for="task-progress">Progress</label>
-          <div class="progress-wrap progress-wrap-large">
-            <output id="task-progress-label" class="progress-label" for="task-progress">0%</output>
-            <input id="task-progress" class="progress-range" type="range" min="0" max="100" step="5" value="0">
-          </div>
-        </div>
-      </div>
-
-      <p id="task-error" class="form-error" role="alert" hidden></p>
-
-      <div class="dialog-actions">
-        <button id="task-delete" class="btn btn-danger" type="button" hidden>Delete</button>
-        <span class="spacer"></span>
-        <button id="task-cancel" class="btn btn-quiet" type="button">Cancel</button>
-        <button id="task-save" class="btn btn-primary" type="submit">Save task</button>
-      </div>
-    </form>
-
-    <section id="activity" class="activity" hidden>
-      <h3 class="label">Updates</h3>
-      <div class="update-compose">
-        <input id="update-input" class="input" type="text" maxlength="1000" placeholder="Add an update on this task" aria-label="Add an update on this task" autocomplete="off">
-        <button id="update-post" class="btn btn-quiet" type="button">Post</button>
-      </div>
-      <ul id="activity-list" class="activity-list"></ul>
-    </section>
-  </dialog>
+  <!-- Floating task windows, and the tray that holds minimized ones -->
+  <div id="windows"></div>
+  <div id="window-tray" class="window-tray" aria-label="Minimized tasks"></div>
 
   <script src="config.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>

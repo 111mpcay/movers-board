@@ -12,6 +12,8 @@
   --navy-line: rgb(255 255 255 / 0.28);
   --on-navy: #ffffff;
   --on-navy-muted: #c3d0dd;
+  --win-idle: #62758a;
+  --link: #1f5f99;
   --orange: #db7100;
   --orange-hover: #bd6100;
   --on-orange: #ffffff;
@@ -46,6 +48,8 @@
     --navy-deep: #3a5674;
     --navy-line: rgb(255 255 255 / 0.16);
     --on-navy-muted: #a9bbcd;
+    --win-idle: #3d4a58;
+    --link: #8cc4f5;
     --green: #1fce83;
     --track: #2a3541;
     --red: #f0566e;
@@ -71,6 +75,8 @@
   --navy-deep: #3a5674;
   --navy-line: rgb(255 255 255 / 0.16);
   --on-navy-muted: #a9bbcd;
+  --win-idle: #3d4a58;
+  --link: #8cc4f5;
   --green: #1fce83;
   --track: #2a3541;
   --red: #f0566e;
@@ -547,49 +553,193 @@ body::before {
   border-left: 1px solid var(--line);
 }
 
-/* Dialog */
-.dialog {
-  width: min(560px, calc(100vw - 24px));
-  max-height: calc(100dvh - 24px);
-  padding: 0;
+/* Notifications. The top bar has to rise above open windows while the list is showing. */
+.topbar:has(.notify-panel:not([hidden])) { z-index: 6000; }
+.notify { position: relative; }
+.notify-count {
+  display: inline-block;
+  min-width: 20px;
+  margin-left: 7px;
+  padding: 0 6px;
+  font-size: 0.8rem;
+  line-height: 20px;
+  text-align: center;
+  color: var(--on-orange);
+  background: var(--orange);
+  border-radius: 10px;
+}
+.notify-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 6000;
+  width: min(360px, calc(100vw - 24px));
+  max-height: min(460px, calc(100dvh - 90px));
   overflow: auto;
   background: var(--surface);
-  color: var(--ink);
-  border: 0;
-  border-radius: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   box-shadow: var(--shadow-lift);
 }
-.dialog::backdrop { background: rgb(10 20 32 / 0.55); }
-#task-form { display: flex; flex-direction: column; gap: 14px; padding: 16px 20px 18px; }
-.dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.dialog-head h2 { font: 600 1.45rem/1.2 var(--font-display); letter-spacing: 0.02em; text-transform: uppercase; }
-.dialog-actions { display: flex; align-items: center; gap: 8px; }
-.spacer { flex: 1; }
-
-.segmented { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-.segmented input { position: absolute; opacity: 0; width: 1px; height: 1px; }
-.segmented span {
+.notify-head {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.notify-head h2 { font-size: 0.95rem; font-weight: 700; }
+.notify-list { list-style: none; }
+.notify-item {
   display: block;
-  padding: 8px 4px;
-  text-align: center;
-  font-weight: 600;
-  font-size: 0.9rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  width: 100%;
+  padding: 10px 14px;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line);
   cursor: pointer;
 }
-.segmented span:hover { background: var(--surface-2); }
-.segmented input:focus-visible + span { outline: 2px solid var(--orange); outline-offset: 2px; }
-.segmented input:checked + span { color: #ffffff; border-color: transparent; }
-.segmented input[value="low"]:checked + span { background: #6b7784; }
-.segmented input[value="normal"]:checked + span { background: var(--orange); }
-.segmented input[value="high"]:checked + span { background: #cf3049; }
-.segmented input[value="critical"]:checked + span { background: #a80f28; }
+.notify-item:hover { background: var(--surface-2); }
+.notify-item.is-unread { box-shadow: inset 3px 0 0 var(--orange); font-weight: 600; }
+.notify-task, .notify-time { display: block; font-weight: 400; font-size: 0.85rem; color: var(--muted); overflow-wrap: anywhere; }
+.notify-empty { padding: 16px 14px; color: var(--muted); font-size: 0.9rem; }
 
-.activity { padding: 14px 20px 18px; background: var(--surface-2); border-top: 1px solid var(--line); }
-.update-compose { display: flex; gap: 8px; }
-.update-compose .input { min-width: 0; }
-.activity-list { list-style: none; display: flex; flex-direction: column; gap: 9px; margin-top: 12px; }
+.link-btn {
+  padding: 0;
+  text-align: left;
+  color: var(--link);
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+/* Floating task windows */
+.win {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: var(--shadow-lift);
+}
+.win:focus { outline: none; }
+.win-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 7px 13px;
+  color: var(--on-navy);
+  background: var(--win-idle);
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.win.is-front .win-bar { background: var(--navy); }
+.win-title { flex: 1; min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.win-btn {
+  flex: none;
+  width: 30px;
+  height: 28px;
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--on-navy);
+  background: rgb(255 255 255 / 0.14);
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.win-btn:hover { background: rgb(255 255 255 / 0.28); }
+.win-btn:focus-visible { outline-color: var(--on-navy); outline-offset: -2px; }
+.win-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 13px 15px 18px; }
+.win-grip {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(135deg, transparent 52%, var(--dot-grey) 52%, var(--dot-grey) 60%, transparent 60%, transparent 72%, var(--dot-grey) 72%, var(--dot-grey) 80%, transparent 80%);
+}
+.win-parent { font-size: 0.88rem; color: var(--muted); }
+.win-heading {
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-bottom: 2px solid var(--orange);
+}
+.win-section { display: flex; flex-direction: column; }
+.win-list { list-style: none; }
+.win-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 9px;
+  padding: 6px 0;
+  font-size: 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+.win-item-main { flex: 1 1 140px; min-width: 0; }
+.win-meta { font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.win-empty { padding: 3px 0 2px; font-size: 0.86rem; color: var(--muted); }
+.win-form { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.win-form .input { flex: 1 1 130px; min-width: 0; min-height: 36px; padding: 6px 9px; }
+.win-form .btn { min-height: 36px; padding: 5px 13px; }
+.win-form .is-narrow { flex: 0 1 112px; }
+.win-upload { cursor: pointer; display: inline-flex; align-items: center; }
+.win-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.win-upload:focus-within { outline: 2px solid var(--orange); outline-offset: 2px; }
+.win-uploading { font-style: italic; color: var(--muted); }
+.win-remove { padding: 1px 6px; font-size: 0.8rem; color: var(--danger); background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
+.win-remove:hover, .win-remove.armed { background: var(--danger-bg); }
+.win-foot { display: flex; align-items: center; gap: 8px; }
+.win-new-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.spacer { flex: 1; }
+.subtask-done { text-decoration: line-through; color: var(--muted); }
+
+.window-tray {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 10px;
+  z-index: 5000;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  pointer-events: none;
+}
+.win-chip {
+  max-width: 240px;
+  padding: 7px 12px;
+  font-size: 0.86rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--on-navy);
+  background: var(--navy);
+  border: 0;
+  border-radius: 6px;
+  box-shadow: var(--shadow-lift);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.activity-list { list-style: none; display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
 .activity-list li { font-size: 0.88rem; overflow-wrap: anywhere; }
 .activity-time { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
 .activity-system { color: var(--muted); }
@@ -626,6 +776,15 @@ body::before {
 
   .topbar-actions { width: 100%; }
   .topbar-actions .who { flex: 1; }
+}
+
+/* Phones: dragging doesn't work well here, so windows fill the screen and stack */
+@media (max-width: 700px) {
+  .win { inset: 0 !important; width: auto !important; height: auto !important; border: 0; border-radius: 0; }
+  .win-bar { cursor: default; padding-top: max(7px, env(safe-area-inset-top, 0px)); }
+  .win-btn { width: 38px; height: 34px; }
+  .win-grip { display: none; }
+  .win-body { padding-bottom: max(18px, env(safe-area-inset-bottom, 0px)); }
 }
 
 @media (max-width: 480px) {

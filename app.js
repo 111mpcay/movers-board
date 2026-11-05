@@ -3,18 +3,31 @@
 const STATUS = { todo: "To do", doing: "In progress", done: "Done" };
 const URGENCY = { low: "Low", normal: "Normal", high: "High", critical: "Critical" };
 const POLL_MS = 5000;
-const SESSION_KEY = "board.session";
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MIN_WINDOW = { width: 340, height: 260 };
+const KEEP_ON_SCREEN = 90; // how much of a dragged window always stays reachable
+const OPENS_IN_BROWSER = /^(image\/(png|jpeg|gif|webp)|application\/pdf|text\/plain|video\/mp4)/;
+
+// Demo mode for trying the page without touching real data. It only works on this
+// computer: the live site doesn't carry demo-store.js.
+const WANTS_DEMO = location.hostname === "localhost" && new URLSearchParams(location.search).has("demo");
+const SESSION_KEY = WANTS_DEMO ? "board.session.demo" : "board.session";
 const NAME_KEY = "board.lastName";
 
 const state = {
   store: null,
   tasks: [],
+  notifications: [],
+  people: [],
   version: -1,
   name: "",
   dragging: false,
+  lastDrop: 0,
   writes: 0, // bumps on every change so a slower, older read can't undo it
-  editingId: null,
   pollTimer: null,
+  windows: new Map(),
+  windowCount: 0,
+  topZ: 100,
 };
 
 // ---------- Helpers ----------
@@ -62,6 +75,13 @@ function timeAgo(iso) {
   if (days < 30) return `${days} d ago`;
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+function formatSize(bytes) {
+  if (bytes == null) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+const clamp = (value, low, high) => Math.min(Math.max(value, low), Math.max(low, high));
 
 // The short warning shown under a deadline. Finished tasks and distant dates get none.
 function deadlineNote(task) {
@@ -98,6 +118,7 @@ function onlyChanged(task, changes) {
 }
 
 const findTask = (id) => state.tasks.find((t) => t.id === id);
+const subtasksOf = (id) => state.tasks.filter((t) => t.parent_id === id).sort((a, b) => a.position - b.position);
 
 // ---------- Data ----------
 
@@ -108,6 +129,20 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
       method: "POST",
       headers: { "Content-Type": "application/json", apikey: supabaseKey },
       body: JSON.stringify(args),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const error = new Error(body?.message || `Request failed (${res.status})`);
+      error.code = body?.message;
+      throw error;
+    }
+    return body;
+  }
+  async function fileService(action, details = {}) {
+    const res = await fetch(`${supabaseUrl}/functions/v1/movers-board-files`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: supabaseKey },
+      body: JSON.stringify({ action, token, ...details }),
     });
     const body = await res.json().catch(() => null);
     if (!res.ok) {
@@ -128,12 +163,27 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     move: (id, position) => rpc("movers_move_task", { p_token: token, p_id: id, p_position: position }),
     addUpdate: (id, text) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
+    addLink: (taskId, title, url) => rpc("movers_add_link", { p_token: token, p_task_id: taskId, p_title: title, p_url: url }),
+    removeAttachment: (id) => rpc("movers_remove_attachment", { p_token: token, p_id: id }),
+    markRead: (ids) => rpc("movers_mark_notifications_read", { p_token: token, p_ids: ids }),
+    async uploadFile(taskId, file) {
+      const { path, upload_url: uploadUrl } = await fileService("upload", { task_id: taskId });
+      const res = await fetch(uploadUrl, {
+        method: "PUT",
+        headers: { apikey: supabaseKey, "Content-Type": file.type || "application/octet-stream", "x-upsert": "false" },
+        body: file,
+      });
+      if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+      await rpc("movers_add_file", { p_token: token, p_task_id: taskId, p_path: path, p_name: file.name });
+    },
+    fileUrl: async (id, download) => (await fileService("open", { attachment_id: id, download })).url,
+    cleanFiles: () => fileService("clean"),
   };
 }
 
 async function loadStore() {
   const config = window.BOARD_CONFIG || {};
-  if (config.supabaseUrl) return remoteStore(config);
+  if (config.supabaseUrl && !WANTS_DEMO) return remoteStore(config);
   await new Promise((resolve, reject) => {
     const script = document.createElement("script");
     script.src = "demo-store.js";
@@ -222,8 +272,11 @@ $("gate-form").addEventListener("submit", async (event) => {
 function showGate(message) {
   stopPolling();
   writeStorage("sessionStorage", SESSION_KEY, null);
-  if ($("task-dialog").open) $("task-dialog").close();
+  closeAllWindows();
+  closeNotifications();
   state.tasks = [];
+  state.notifications = [];
+  state.people = [];
   state.version = -1;
   state.store.setToken(null);
   $("task-rows").replaceChildren();
@@ -262,10 +315,16 @@ function cell(label, ...children) {
   return el("div", { class: "cell", role: "cell", "data-label": label }, ...children);
 }
 
+function subtaskSummary(task) {
+  const subtasks = subtasksOf(task.id);
+  if (!subtasks.length) return "";
+  return ` · ${subtasks.filter((s) => s.status === "done").length}/${subtasks.length} subtasks`;
+}
+
 function rowSignature(task) {
   return JSON.stringify([
     task.title, task.assignee, task.urgency, task.deadline, task.status, task.progress,
-    task.updated_by, timeAgo(task.updated_at), deadlineNote(task)?.text,
+    task.updated_by, timeAgo(task.updated_at), deadlineNote(task)?.text, subtaskSummary(task),
   ]);
 }
 
@@ -286,8 +345,8 @@ function renderRow(task) {
     el("div", { class: "task-cell", role: "cell" },
       el("span", { class: "grip", "aria-hidden": "true" }),
       el("div", { class: "task-text" },
-        el("button", { class: "task-title", type: "button", "data-open": true }, task.title),
-        el("div", { class: "task-meta" }, `${task.updated_by} · ${timeAgo(task.updated_at)}`))),
+        el("button", { class: "task-title", type: "button" }, task.title),
+        el("div", { class: "task-meta" }, `${task.updated_by} · ${timeAgo(task.updated_at)}${subtaskSummary(task)}`))),
     cell("Assign", el("input", {
       class: "cell-input assign-input",
       type: "text",
@@ -318,7 +377,7 @@ function renderRow(task) {
 }
 
 function renderSummary() {
-  const open = state.tasks.filter((t) => t.status !== "done");
+  const open = state.tasks.filter((t) => !t.parent_id && t.status !== "done");
   const overdue = open.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
   const today = open.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
   const parts = [el("span", {}, `${open.length} open`)];
@@ -328,7 +387,7 @@ function renderSummary() {
 }
 
 function renderPeople() {
-  const names = new Set([state.name]);
+  const names = new Set([state.name, ...state.people]);
   for (const task of state.tasks) {
     for (const name of [task.assignee, task.created_by, task.updated_by]) {
       if (name) names.add(name);
@@ -343,7 +402,7 @@ function renderRows() {
   const list = $("task-rows");
   const focused = document.activeElement;
   const activeRow = focused?.closest?.(".task-row") || null;
-  const tasks = [...state.tasks].sort((a, b) => a.position - b.position);
+  const tasks = state.tasks.filter((t) => !t.parent_id).sort((a, b) => a.position - b.position);
   const existing = new Map([...list.children].map((row) => [row.dataset.id, row]));
   const wanted = new Set(tasks.map((t) => t.id));
   existing.forEach((row, id) => { if (!wanted.has(id)) row.remove(); });
@@ -369,6 +428,8 @@ function renderBoard() {
   renderRows();
   renderSummary();
   renderPeople();
+  renderNotifications();
+  renderWindows();
 }
 
 function refreshRow(id, focusField) {
@@ -390,7 +451,23 @@ async function updateTask(id, changes, focusField) {
   Object.assign(task, diff, { updated_by: state.name, updated_at: new Date().toISOString() });
   refreshRow(id, focusField);
   renderSummary();
+  renderWindows();
   await write(() => state.store.save(id, diff), "That change didn't save, so it has been undone. Check your connection and try again.");
+}
+
+function fieldValue(control) {
+  const field = control.dataset.field;
+  if (field === "progress") return Number(control.value);
+  if (field === "deadline") return control.value || null;
+  if (field === "assignee" || field === "title" || field === "details") return control.value.trim();
+  return control.value;
+}
+
+// Moves the bar and the number while a progress slider is being dragged.
+function previewProgress(event) {
+  if (event.target.dataset.field !== "progress") return;
+  event.target.style.setProperty("--p", `${event.target.value}%`);
+  event.target.closest(".progress-wrap").querySelector(".progress-label").textContent = `${event.target.value}%`;
 }
 
 const rows = $("task-rows");
@@ -398,21 +475,11 @@ const rows = $("task-rows");
 rows.addEventListener("change", (event) => {
   const control = event.target.closest("[data-field]");
   if (!control) return;
-  const id = control.closest(".task-row").dataset.id;
   const field = control.dataset.field;
-  let value = control.value;
-  if (field === "progress") value = Number(value);
-  if (field === "assignee") value = value.trim();
-  if (field === "deadline") value = value || null;
-  updateTask(id, { [field]: value }, field);
+  updateTask(control.closest(".task-row").dataset.id, { [field]: fieldValue(control) }, field);
 });
 
-// Moves the bar and the number while the slider is being dragged.
-rows.addEventListener("input", (event) => {
-  if (event.target.dataset.field !== "progress") return;
-  event.target.style.setProperty("--p", `${event.target.value}%`);
-  event.target.closest(".progress-wrap").querySelector(".progress-label").textContent = `${event.target.value}%`;
-});
+rows.addEventListener("input", previewProgress);
 
 rows.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && event.target.dataset.field === "assignee") {
@@ -422,8 +489,11 @@ rows.addEventListener("keydown", (event) => {
 });
 
 rows.addEventListener("click", (event) => {
-  const opener = event.target.closest("[data-open]");
-  if (opener && !state.dragging) openTask(opener.closest(".task-row").dataset.id);
+  const taskCell = event.target.closest(".task-cell");
+  // A drag ends with a click on the same cell, which shouldn't open the task.
+  if (taskCell && !state.dragging && Date.now() - state.lastDrop > 300) {
+    openTask(taskCell.closest(".task-row").dataset.id);
+  }
 });
 
 rows.addEventListener("focusout", () => {
@@ -457,6 +527,7 @@ function setUpDragging() {
 
 async function handleDrop(event) {
   state.dragging = false;
+  state.lastDrop = Date.now();
   document.body.classList.remove("is-dragging");
   if (event.oldIndex === event.newIndex) return;
 
@@ -528,8 +599,9 @@ async function refresh() {
       if (result.changed) {
         state.version = result.version;
         state.tasks = result.tasks;
+        state.notifications = result.notifications || [];
+        state.people = result.people || [];
         renderBoard();
-        if (state.editingId) renderActivity();
       }
       if ($("sync-note").dataset.offline) {
         delete $("sync-note").dataset.offline;
@@ -570,161 +642,582 @@ setInterval(() => {
   if (state.pollTimer && !state.dragging && !document.hidden) renderBoard();
 }, 60000);
 
-// ---------- Add and edit in the dialog ----------
+// ---------- Floating windows ----------
 
-const dialog = $("task-dialog");
+const isPhone = () => window.matchMedia("(max-width: 700px)").matches;
 
-function setDialogProgress(value) {
-  $("task-progress").value = value;
-  $("task-progress").style.setProperty("--p", `${value}%`);
-  $("task-progress-label").textContent = `${value}%`;
+function placeWindow(w) {
+  const { innerWidth: vw, innerHeight: vh } = window;
+  w.width = clamp(w.width, MIN_WINDOW.width, vw - 16);
+  w.height = clamp(w.height, MIN_WINDOW.height, vh - 16);
+  w.x = clamp(w.x, KEEP_ON_SCREEN - w.width, vw - KEEP_ON_SCREEN);
+  w.y = clamp(w.y, 0, vh - 44);
+  Object.assign(w.root.style, { left: `${w.x}px`, top: `${w.y}px`, width: `${w.width}px`, height: `${w.height}px` });
 }
 
-function resetDelete() {
-  $("task-delete").classList.remove("armed");
-  $("task-delete").textContent = "Delete";
+// Follows a pointer from pressing on the handle until it's released.
+function trackPointer(handle, begin, move) {
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || event.target.closest("button") || isPhone()) return;
+    event.preventDefault();
+    const start = { x: event.clientX, y: event.clientY };
+    const from = begin();
+    handle.setPointerCapture(event.pointerId);
+    const onMove = (e) => move(e.clientX - start.x, e.clientY - start.y, from);
+    const onEnd = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onEnd);
+      handle.removeEventListener("pointercancel", onEnd);
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onEnd);
+    handle.addEventListener("pointercancel", onEnd);
+  });
 }
+
+function focusWindow(w) {
+  if (w.root.classList.contains("is-front") && w.root.style.zIndex === String(state.topZ)) return;
+  state.windows.forEach((other) => other.root.classList.remove("is-front"));
+  w.root.classList.add("is-front");
+  w.root.style.zIndex = ++state.topZ;
+}
+
+function closeWindow(w) {
+  w.chip?.remove();
+  w.root.remove();
+  state.windows.delete(w.key);
+}
+
+function closeAllWindows() {
+  [...state.windows.values()].forEach(closeWindow);
+}
+
+function minimizeWindow(w) {
+  w.root.hidden = true;
+  w.chip = el("button", { class: "win-chip", type: "button" }, w.titleEl.textContent);
+  w.chip.addEventListener("click", () => showWindow(w));
+  $("window-tray").append(w.chip);
+}
+
+function showWindow(w) {
+  w.chip?.remove();
+  w.chip = null;
+  w.root.hidden = false;
+  focusWindow(w);
+  w.root.focus({ preventScroll: true });
+}
+
+function createWindow(key, title) {
+  const titleEl = el("span", { class: "win-title" }, title);
+  const minimize = el("button", { class: "win-btn", type: "button", "aria-label": "Minimize" }, "–");
+  const close = el("button", { class: "win-btn", type: "button", "aria-label": "Close" }, "×");
+  const bar = el("header", { class: "win-bar" }, titleEl, minimize, close);
+  const body = el("div", { class: "win-body" });
+  const grip = el("div", { class: "win-grip", "aria-hidden": "true" });
+  const root = el("section", { class: "win", role: "dialog", "aria-label": title, tabindex: "-1" }, bar, body, grip);
+
+  const step = state.windowCount++ % 6;
+  const w = {
+    key, root, body, titleEl, chip: null,
+    x: 48 + step * 32,
+    y: 70 + step * 28,
+    width: 500,
+    height: window.innerHeight - 110,
+  };
+  w.height = Math.min(w.height, 680);
+  $("windows").append(root);
+  state.windows.set(key, w);
+  placeWindow(w);
+
+  root.addEventListener("pointerdown", () => focusWindow(w));
+  root.addEventListener("focusin", () => focusWindow(w));
+  root.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeWindow(w);
+  });
+  minimize.addEventListener("click", () => minimizeWindow(w));
+  close.addEventListener("click", () => closeWindow(w));
+  trackPointer(bar, () => ({ x: w.x, y: w.y }), (dx, dy, from) => {
+    w.x = from.x + dx;
+    w.y = from.y + dy;
+    placeWindow(w);
+  });
+  trackPointer(grip, () => ({ width: w.width, height: w.height }), (dx, dy, from) => {
+    w.width = Math.min(from.width + dx, window.innerWidth - w.x);
+    w.height = Math.min(from.height + dy, window.innerHeight - w.y);
+    placeWindow(w);
+  });
+  return w;
+}
+
+window.addEventListener("resize", () => state.windows.forEach(placeWindow));
+
+function field(label, control, ...rest) {
+  return el("label", { class: "field" }, el("span", { class: "label" }, label), control, ...rest);
+}
+
+function textInput(attrs) {
+  return el("input", { class: "input", type: "text", autocomplete: "off", ...attrs });
+}
+
+function optionsSelect(fieldName, options) {
+  return el("select", { class: "input", "data-field": fieldName },
+    ...Object.entries(options).map(([key, text]) => el("option", { value: key }, text)));
+}
+
+function section(heading, ...children) {
+  return el("section", { class: "win-section" }, el("h3", { class: "win-heading" }, heading), ...children);
+}
+
+function taskFields() {
+  return [
+    field("Task", textInput({ maxlength: "200", "data-field": "title" })),
+    field("Details", el("textarea", { class: "input", rows: "2", maxlength: "4000", "data-field": "details" })),
+    el("div", { class: "field-row" },
+      field("Assign to", textInput({ maxlength: "60", list: "people-list", "data-field": "assignee" })),
+      field("Deadline", el("input", { class: "input", type: "date", "data-field": "deadline" }),
+        el("span", { class: "due-note", "data-deadline-note": true }))),
+    el("div", { class: "field-row" },
+      field("Urgency", optionsSelect("urgency", URGENCY)),
+      field("Status", optionsSelect("status", STATUS))),
+  ];
+}
+
+// ---------- A task's window ----------
 
 function openTask(id) {
-  const task = id ? findTask(id) : null;
-  if (id && !task) return;
-  state.editingId = id || null;
-  $("dialog-title").textContent = task ? "Edit task" : "Add task";
-  $("task-title").value = task?.title || "";
-  $("task-details").value = task?.details || "";
-  $("task-assignee").value = task?.assignee || "";
-  $(`urgency-${task?.urgency || "normal"}`).checked = true;
-  $("task-deadline").value = task?.deadline || "";
-  $("task-status").value = task?.status || "todo";
-  setDialogProgress(task?.progress ?? 0);
-  $("task-save").textContent = task ? "Save changes" : "Add task";
-  $("task-error").hidden = true;
-  $("task-delete").hidden = !task;
-  $("activity").hidden = !task;
-  $("update-input").value = "";
-  resetDelete();
-  if (task) renderActivity();
-  dialog.showModal();
-  if (!task) $("task-title").focus();
+  const task = findTask(id);
+  if (!task) return;
+  let w = state.windows.get(id);
+  if (!w) {
+    w = createWindow(id, task.title);
+    w.taskId = id;
+    w.uploading = [];
+    buildTaskWindow(w, task);
+    renderTaskWindow(w);
+  }
+  showWindow(w);
 }
 
-function renderActivity() {
-  const task = findTask(state.editingId);
-  if (!task) return;
-  const items = [...(task.updates || [])].reverse().map((entry) => {
+function buildTaskWindow(w, task) {
+  const isSubtask = !!task.parent_id;
+  const parts = [
+    isSubtask && el("p", { class: "win-parent" }, "Part of ", el("button", { class: "link-btn", type: "button", "data-open-task": task.parent_id }, "")),
+    ...taskFields(),
+    field("Progress", el("div", { class: "progress-wrap progress-wrap-large" },
+      el("output", { class: "progress-label" }, "0%"),
+      el("input", { class: "progress-range", type: "range", min: "0", max: "100", step: "5", "data-field": "progress" }))),
+    el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
+    !isSubtask && section("Subtasks",
+      el("ul", { class: "win-list", "data-list": "subtasks" }),
+      el("form", { class: "win-form", "data-form": "subtask", novalidate: true },
+        textInput({ maxlength: "200", placeholder: "Add a subtask", "aria-label": "New subtask", "data-input": "title" }),
+        textInput({ class: "input is-narrow", maxlength: "60", list: "people-list", placeholder: "Assign", "aria-label": "Assign the new subtask to", "data-input": "assignee" }),
+        el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
+    section("Updates",
+      el("form", { class: "win-form", "data-form": "update", novalidate: true },
+        textInput({ maxlength: "1000", placeholder: "Add an update", "aria-label": "New update", "data-input": "text" }),
+        el("button", { class: "btn btn-primary", type: "submit" }, "Post")),
+      el("ul", { class: "activity-list", "data-list": "updates" })),
+    section("Files",
+      el("ul", { class: "win-list", "data-list": "files" }),
+      el("div", { class: "win-form" },
+        el("label", { class: "btn btn-quiet win-upload" }, "Upload files", el("input", { type: "file", multiple: true, "data-upload": true })))),
+    section("Links",
+      el("ul", { class: "win-list", "data-list": "links" }),
+      el("form", { class: "win-form", "data-form": "link", novalidate: true },
+        textInput({ maxlength: "2000", placeholder: "Paste a link", "aria-label": "Link address", "data-input": "url", inputmode: "url" }),
+        textInput({ class: "input is-narrow", maxlength: "255", placeholder: "Title (optional)", "aria-label": "Link title", "data-input": "title" }),
+        el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
+    el("div", { class: "win-foot" },
+      el("button", { class: "btn btn-danger", type: "button", "data-delete-task": true }, isSubtask ? "Delete this subtask" : "Delete this task")),
+  ];
+  w.body.append(...parts.filter(Boolean));
+  w.body.addEventListener("change", (event) => onWindowChange(w, event));
+  w.body.addEventListener("input", previewProgress);
+  w.body.addEventListener("submit", (event) => onWindowSubmit(w, event));
+  w.body.addEventListener("click", (event) => onWindowClick(w, event));
+}
+
+function showWindowError(w, message) {
+  const note = w.body.querySelector("[data-error]");
+  note.textContent = message || "";
+  note.hidden = !message;
+}
+
+function setFieldValue(w, name, value) {
+  const control = w.body.querySelector(`[data-field="${name}"]`);
+  if (control && control !== document.activeElement) control.value = value ?? "";
+}
+
+// Rebuilds one list, but only when its contents changed, so a half-confirmed
+// Remove button survives the next refresh.
+function renderList(w, name, contents, build) {
+  const list = w.body.querySelector(`[data-list="${name}"]`);
+  if (!list) return;
+  const signature = JSON.stringify(contents);
+  if (list.dataset.sig === signature) return;
+  list.dataset.sig = signature;
+  list.replaceChildren(...build());
+}
+
+function removeButton(attachment) {
+  return el("button", { class: "win-remove", type: "button", "data-remove": attachment.id, "data-kind": attachment.kind, "aria-label": `Remove ${attachment.title}` }, "Remove");
+}
+
+function renderTaskWindow(w) {
+  const task = findTask(w.taskId);
+  const title = task.parent_id ? `Subtask: ${task.title}` : task.title;
+  w.titleEl.textContent = title;
+  w.root.setAttribute("aria-label", title);
+  if (w.chip) w.chip.textContent = title;
+
+  for (const name of ["title", "details", "assignee", "deadline", "urgency", "status"]) {
+    setFieldValue(w, name, task[name]);
+  }
+  const range = w.body.querySelector('[data-field="progress"]');
+  if (range !== document.activeElement) {
+    range.value = task.progress;
+    range.style.setProperty("--p", `${task.progress}%`);
+    range.closest(".progress-wrap").querySelector(".progress-label").textContent = `${task.progress}%`;
+  }
+  const note = deadlineNote(task);
+  const noteEl = w.body.querySelector("[data-deadline-note]");
+  noteEl.textContent = note?.text || "";
+  noteEl.className = `due-note${note ? ` due-${note.tone}` : ""}`;
+  const parentLink = w.body.querySelector("[data-open-task]");
+  if (parentLink) parentLink.textContent = findTask(task.parent_id)?.title || "";
+
+  const subtasks = subtasksOf(task.id);
+  renderList(w, "subtasks", subtasks.map((s) => [s.id, s.title, s.assignee, s.status, deadlineNote(s)?.text]), () =>
+    subtasks.length ? subtasks.map((s) => {
+      const due = deadlineNote(s);
+      return el("li", { class: "win-item" },
+        el("input", { type: "checkbox", "data-done": s.id, checked: s.status === "done", "aria-label": `Mark ${s.title} done` }),
+        el("span", { class: "win-item-main" },
+          el("button", { class: `link-btn${s.status === "done" ? " subtask-done" : ""}`, type: "button", "data-open-task": s.id }, s.title)),
+        el("span", { class: "win-meta" }, s.assignee || "Unassigned"),
+        due && el("span", { class: `due-note due-${due.tone}` }, due.text));
+    }) : [el("li", { class: "win-empty" }, "No subtasks yet.")]);
+
+  const updates = [...(task.updates || [])].reverse();
+  renderList(w, "updates", updates.map((u) => [u.at, u.by, u.text, timeAgo(u.at)]), () => updates.map((entry) => {
     const time = el("span", { class: "activity-time" }, timeAgo(entry.at));
     if (entry.kind === "note") {
-      return el("li", {}, el("strong", {}, entry.by), " ", time,
-        el("span", { class: "activity-note" }, entry.text));
+      return el("li", {}, el("strong", {}, entry.by), " ", time, el("span", { class: "activity-note" }, entry.text));
     }
     return el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, time);
-  });
-  $("activity-list").replaceChildren(...items);
+  }));
+
+  const attachments = task.attachments || [];
+  const files = attachments.filter((a) => a.kind === "file");
+  renderList(w, "files", [files.map((f) => [f.id, f.title]), w.uploading], () => [
+    ...files.map((f) => el("li", { class: "win-item" },
+      el("span", { class: "win-item-main" },
+        el("button", { class: "link-btn", type: "button", "data-file": f.id, "data-mime": f.mime || "" }, f.title)),
+      el("span", { class: "win-meta" }, `${formatSize(f.size_bytes)} · ${f.created_by}`),
+      removeButton(f))),
+    ...w.uploading.map((name) => el("li", { class: "win-item win-uploading" }, `Uploading ${name}…`)),
+    !files.length && !w.uploading.length && el("li", { class: "win-empty" }, "No files yet."),
+  ].filter(Boolean));
+
+  const links = attachments.filter((a) => a.kind === "link");
+  renderList(w, "links", links.map((l) => [l.id, l.title, l.url]), () =>
+    links.length ? links.map((l) => el("li", { class: "win-item" },
+      el("span", { class: "win-item-main" },
+        // The server only accepts http and https addresses, so this can't run script.
+        el("a", { class: "link-btn", href: l.url, target: "_blank", rel: "noopener noreferrer" }, l.title)),
+      el("span", { class: "win-meta" }, l.created_by),
+      removeButton(l))) : [el("li", { class: "win-empty" }, "No links yet.")]);
 }
 
-function closeDialog() {
-  state.editingId = null;
-  dialog.close();
+function renderWindows() {
+  for (const w of [...state.windows.values()]) {
+    if (!w.taskId) continue;
+    if (findTask(w.taskId)) renderTaskWindow(w);
+    else {
+      closeWindow(w);
+      if (!w.deleting) showSyncNote("A task you had open was deleted by someone else.");
+    }
+  }
 }
 
-$("dialog-close").addEventListener("click", closeDialog);
-$("task-cancel").addEventListener("click", closeDialog);
-// Covers closing with Esc. The event arrives late, possibly after another task
-// has been opened, and that task must stay the one being edited.
-dialog.addEventListener("close", () => {
-  if (!dialog.open) state.editingId = null;
-});
+function onWindowChange(w, event) {
+  const control = event.target;
+  if (control.dataset.field) {
+    const name = control.dataset.field;
+    const value = fieldValue(control);
+    if (name === "title" && !value) {
+      showWindowError(w, "Give the task a name.");
+      control.value = findTask(w.taskId).title;
+      return;
+    }
+    showWindowError(w, null);
+    updateTask(w.taskId, { [name]: value });
+  } else if (control.dataset.done) {
+    updateTask(control.dataset.done, { status: control.checked ? "done" : "todo" });
+  } else if (control.dataset.upload !== undefined) {
+    uploadFiles(w, [...control.files]);
+    control.value = "";
+  }
+}
 
-$("task-status").addEventListener("change", () => {
-  const current = { progress: Number($("task-progress").value) };
-  const linked = linkStatusAndProgress(current, { status: $("task-status").value });
-  if ("progress" in linked) setDialogProgress(linked.progress);
-});
-$("task-progress").addEventListener("input", () => {
-  const value = Number($("task-progress").value);
-  setDialogProgress(value);
-  const linked = linkStatusAndProgress({ status: $("task-status").value }, { progress: value });
-  if (linked.status) $("task-status").value = linked.status;
-});
-
-$("task-form").addEventListener("submit", async (event) => {
+async function onWindowSubmit(w, event) {
   event.preventDefault();
-  const title = $("task-title").value.trim();
+  const form = event.target;
+  const input = (name) => form.querySelector(`[data-input="${name}"]`);
+  const button = form.querySelector('button[type="submit"]');
+  let action, failure, focusAfter;
+
+  if (form.dataset.form === "subtask") {
+    const title = input("title").value.trim();
+    if (!title) return input("title").focus();
+    const assignee = input("assignee").value.trim();
+    action = () => state.store.save(null, { title, assignee, parent_id: w.taskId });
+    failure = "That subtask didn't save. Check your connection and try again.";
+    focusAfter = input("title");
+  } else if (form.dataset.form === "update") {
+    const text = input("text").value.trim();
+    if (!text) return input("text").focus();
+    action = () => state.store.addUpdate(w.taskId, text);
+    failure = "That update didn't post. Check your connection and try again.";
+    focusAfter = input("text");
+  } else if (form.dataset.form === "link") {
+    let url = input("url").value.trim();
+    if (!url) return input("url").focus();
+    if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) url = `https://${url}`;
+    const title = input("title").value.trim();
+    action = () => state.store.addLink(w.taskId, title, url);
+    failure = "That link wasn't added. Enter a web address starting with http:// or https://.";
+    focusAfter = input("url");
+  } else {
+    return;
+  }
+
+  button.disabled = true;
+  const result = await write(action, null);
+  button.disabled = false;
+  if (!w.root.isConnected) return;
+  if (result.ok) {
+    form.reset();
+    showWindowError(w, null);
+    focusAfter.focus();
+  } else {
+    showWindowError(w, failure);
+  }
+}
+
+function onWindowClick(w, event) {
+  const target = event.target;
+  const opener = target.closest("[data-open-task]");
+  if (opener) return openTask(opener.dataset.openTask);
+  const file = target.closest("[data-file]");
+  if (file) return openFile(w, file.dataset.file, file.dataset.mime);
+  const remove = target.closest("[data-remove]");
+  if (remove) return removeAttachment(w, remove);
+  if (target.closest("[data-delete-task]")) return deleteTask(w, target.closest("[data-delete-task]"));
+}
+
+async function uploadFiles(w, files) {
+  for (const file of files) {
+    if (file.size > MAX_FILE_BYTES) {
+      showWindowError(w, `${file.name} is too large. Files can be up to 25 MB.`);
+      continue;
+    }
+    w.uploading.push(file.name);
+    if (w.root.isConnected) renderTaskWindow(w);
+    const result = await write(() => state.store.uploadFile(w.taskId, file), null);
+    w.uploading.splice(w.uploading.indexOf(file.name), 1);
+    if (!w.root.isConnected) continue;
+    if (result.ok) showWindowError(w, null);
+    else showWindowError(w, `${file.name} didn't upload. Check your connection and try again.`);
+    renderTaskWindow(w);
+  }
+}
+
+async function openFile(w, id, mime) {
+  const inline = OPENS_IN_BROWSER.test(mime);
+  // A pop-up blocker only allows this before waiting on the network.
+  const tab = inline ? window.open("about:blank", "_blank") : null;
+  try {
+    const url = await state.store.fileUrl(id, !inline);
+    if (tab) {
+      tab.opener = null;
+      tab.location = url;
+    } else if (inline) {
+      window.open(url, "_blank", "noopener");
+    } else {
+      el("a", { href: url }).click();
+    }
+    showWindowError(w, null);
+  } catch (error) {
+    tab?.close();
+    if (error.code === "session_expired") showGate("Your session ended. Enter the PIN to continue.");
+    else showWindowError(w, "That file couldn't be opened. Check your connection and try again.");
+  }
+}
+
+// Removing takes a second click, which has to come within a few seconds.
+function armButton(button, label, resetLabel) {
+  if (button.classList.contains("armed")) return true;
+  button.classList.add("armed");
+  button.textContent = label;
+  setTimeout(() => {
+    if (!button.isConnected) return;
+    button.classList.remove("armed");
+    button.textContent = resetLabel;
+  }, 4000);
+  return false;
+}
+
+async function removeAttachment(w, button) {
+  if (!armButton(button, "Confirm?", "Remove")) return;
+  button.disabled = true;
+  const isFile = button.dataset.kind === "file";
+  const result = await write(() => state.store.removeAttachment(button.dataset.remove), null);
+  button.disabled = false;
+  if (result.ok) {
+    showWindowError(w, null);
+    if (isFile) state.store.cleanFiles().catch(() => { /* retried by the next removal */ });
+  } else {
+    showWindowError(w, "That wasn't removed. Check your connection and try again.");
+  }
+}
+
+async function deleteTask(w, button) {
+  const id = w.taskId;
+  const original = button.textContent;
+  if (!armButton(button, "Delete for everyone?", original)) return;
+  button.disabled = true;
+  // Its own windows may close during the refresh below, before this function resumes.
+  const going = [id, ...subtasksOf(id).map((s) => s.id)].map((key) => state.windows.get(key)).filter(Boolean);
+  going.forEach((open) => { open.deleting = true; });
+  const result = await write(() => state.store.remove(id), null);
+  if (result.ok) {
+    going.forEach(closeWindow);
+    state.tasks = state.tasks.filter((t) => t.id !== id && t.parent_id !== id);
+    state.store.cleanFiles().catch(() => { /* retried by the next removal */ });
+  } else {
+    going.forEach((open) => { open.deleting = false; });
+    button.disabled = false;
+    showWindowError(w, "That task wasn't deleted. Check your connection and try again.");
+  }
+}
+
+// ---------- Adding a task with more than a name ----------
+
+function openNewTask() {
+  const existing = state.windows.get("new");
+  if (existing) return showWindow(existing);
+  const w = createWindow("new", "Add task");
+  w.height = Math.min(w.height, 470);
+  placeWindow(w);
+  const form = el("form", { class: "win-body", novalidate: true },
+    ...taskFields(),
+    el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
+    el("div", { class: "win-new-actions" }, el("button", { class: "btn btn-primary", type: "submit" }, "Add task")));
+  w.body.replaceWith(form);
+  w.body = form;
+  w.body.querySelector('[data-field="status"]').closest(".field").remove();
+  w.body.querySelector('[data-field="urgency"]').value = "normal";
+  form.addEventListener("submit", (event) => submitNewTask(w, event));
+  showWindow(w);
+  w.body.querySelector('[data-field="title"]').focus();
+}
+
+async function submitNewTask(w, event) {
+  event.preventDefault();
+  const value = (name) => fieldValue(w.body.querySelector(`[data-field="${name}"]`));
+  const title = value("title");
   if (!title) {
-    $("task-error").textContent = "Give the task a name.";
-    $("task-error").hidden = false;
-    $("task-title").focus();
+    showWindowError(w, "Give the task a name.");
+    w.body.querySelector('[data-field="title"]').focus();
     return;
   }
   const fields = {
     title,
-    details: $("task-details").value.trim(),
-    assignee: $("task-assignee").value.trim(),
-    urgency: new FormData($("task-form")).get("urgency"),
-    deadline: $("task-deadline").value || null,
-    status: $("task-status").value,
-    progress: Number($("task-progress").value),
+    details: value("details"),
+    assignee: value("assignee"),
+    deadline: value("deadline"),
+    urgency: value("urgency"),
   };
-  const task = findTask(state.editingId);
-  const payload = task ? onlyChanged(task, fields) : fields;
-  if (!Object.keys(payload).length) return closeDialog();
-
-  $("task-save").disabled = true;
-  const saved = await write(() => state.store.save(state.editingId, payload), null);
-  $("task-save").disabled = false;
-  if (saved.ok) {
-    closeDialog();
-  } else if (dialog.open) {
-    $("task-error").textContent = "That task didn't save. Check your connection and try again.";
-    $("task-error").hidden = false;
-  }
-});
-
-$("task-delete").addEventListener("click", async () => {
-  const button = $("task-delete");
-  if (!button.classList.contains("armed")) {
-    button.classList.add("armed");
-    button.textContent = "Delete for everyone?";
-    return;
-  }
-  const id = state.editingId;
+  const button = w.body.querySelector('button[type="submit"]');
   button.disabled = true;
-  const deleted = await write(() => state.store.remove(id), null);
+  const saved = await write(() => state.store.save(null, fields), null);
   button.disabled = false;
-  if (deleted.ok) {
-    closeDialog();
-  } else if (dialog.open) {
-    $("task-error").textContent = "That task wasn't deleted. Check your connection and try again.";
-    $("task-error").hidden = false;
-  }
-});
+  if (!saved.ok) return showWindowError(w, "That task didn't save. Check your connection and try again.");
 
-async function postUpdate() {
-  const text = $("update-input").value.trim();
-  const id = state.editingId;
-  if (!text || !id) return;
-  $("update-post").disabled = true;
-  const posted = await write(() => state.store.addUpdate(id, text), "That update didn't post. Check your connection and try again.");
-  $("update-post").disabled = false;
-  if (posted.ok) $("update-input").value = "";
+  const { x, y, width } = w;
+  closeWindow(w);
+  if (!findTask(saved.result.id)) state.tasks.push({ attachments: [], updates: [], ...saved.result });
+  openTask(saved.result.id);
+  const opened = state.windows.get(saved.result.id);
+  Object.assign(opened, { x, y, width });
+  placeWindow(opened);
 }
 
-$("update-post").addEventListener("click", postUpdate);
-$("update-input").addEventListener("keydown", (event) => {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    postUpdate();
+$("add-btn").addEventListener("click", openNewTask);
+
+// ---------- Notifications ----------
+
+function renderNotifications() {
+  const unread = state.notifications.filter((n) => !n.read_at).length;
+  $("notify-count").textContent = unread;
+  $("notify-count").hidden = !unread;
+  $("notify-btn").setAttribute("aria-label", unread ? `Notifications, ${unread} unread` : "Notifications");
+  $("notify-read-all").hidden = !unread;
+  $("notify-list").replaceChildren(...(state.notifications.length
+    ? state.notifications.map((n) => el("li", {},
+      el("button", { class: `notify-item${n.read_at ? "" : " is-unread"}`, type: "button", "data-notification": n.id, "data-task": n.task_id },
+        `${n.by_name} assigned you a ${n.kind}`,
+        el("span", { class: "notify-task" }, n.parent_title ? `${n.title} · in ${n.parent_title}` : n.title),
+        el("span", { class: "notify-time" }, timeAgo(n.created_at)))))
+    : [el("li", { class: "notify-empty" }, "Nothing yet. When someone assigns you a task or subtask, it shows up here.")]));
+}
+
+function closeNotifications() {
+  $("notify-panel").hidden = true;
+  $("notify-btn").setAttribute("aria-expanded", "false");
+}
+
+function markNotificationsRead(ids) {
+  const now = new Date().toISOString();
+  for (const n of state.notifications) {
+    if (!n.read_at && (!ids || ids.includes(n.id))) n.read_at = now;
   }
+  renderNotifications();
+  write(() => state.store.markRead(ids), null);
+}
+
+$("notify-btn").addEventListener("click", () => {
+  const opening = $("notify-panel").hidden;
+  $("notify-panel").hidden = !opening;
+  $("notify-btn").setAttribute("aria-expanded", String(opening));
 });
 
-$("add-btn").addEventListener("click", () => openTask(null));
+$("notify-read-all").addEventListener("click", () => markNotificationsRead(null));
+
+$("notify-list").addEventListener("click", (event) => {
+  const item = event.target.closest("[data-notification]");
+  if (!item) return;
+  markNotificationsRead([item.dataset.notification]);
+  closeNotifications();
+  openTask(item.dataset.task);
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (!event.target.closest(".notify")) closeNotifications();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("notify-panel").hidden) {
+    closeNotifications();
+    $("notify-btn").focus();
+  }
+});
 
 // ---------- Start ----------
 
 async function boot() {
-  for (const [key, label] of Object.entries(STATUS)) {
-    $("task-status").append(el("option", { value: key }, label));
-  }
   setUpDragging();
   try {
     state.store = await loadStore();
