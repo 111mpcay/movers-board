@@ -280,6 +280,7 @@ function showGate(message) {
   writeStorage("sessionStorage", SESSION_KEY, null);
   closeAllWindows();
   closeNotifications();
+  document.title = "Movers Board";
   state.projects = [];
   state.projectId = null;
   state.tasks = [];
@@ -1046,7 +1047,8 @@ function setFieldValue(w, name, value) {
 // Remove button survives the next refresh.
 function renderList(w, name, contents, build) {
   const list = w.body.querySelector(`[data-list="${name}"]`);
-  if (!list) return;
+  // Someone typing a name in this list catches up when they finish.
+  if (!list || list.querySelector("[data-assign-input]")) return;
   const signature = JSON.stringify(contents);
   if (list.dataset.sig === signature) return;
   list.dataset.sig = signature;
@@ -1101,7 +1103,9 @@ function renderTaskWindow(w) {
         el("input", { type: "checkbox", "data-done": s.id, checked: s.status === "done", "aria-label": `Mark ${s.title} done` }),
         el("span", { class: "win-item-main" },
           el("button", { class: `link-btn${s.status === "done" ? " subtask-done" : ""}`, type: "button", "data-open-task": s.id }, s.title)),
-        el("span", { class: "win-meta" }, s.assignee || "Unassigned"),
+        s.assignee
+          ? el("span", { class: "win-meta" }, s.assignee)
+          : el("button", { class: "link-btn win-meta", type: "button", "data-assign": s.id, "aria-label": `Assign ${s.title}` }, "Unassigned"),
         due && el("span", { class: `due-note due-${due.tone}` }, due.text));
     }) : [el("li", { class: "win-empty" }, "No subtasks yet.")]);
 
@@ -1221,11 +1225,59 @@ function onWindowClick(w, event) {
   const target = event.target;
   const opener = target.closest("[data-open-task]");
   if (opener) return openTask(opener.dataset.openTask);
+  const assign = target.closest("[data-assign]");
+  if (assign) return startAssigning(w, assign);
   const file = target.closest("[data-file]");
   if (file) return openFile(w, file.dataset.file, file.dataset.mime);
   const remove = target.closest("[data-remove]");
   if (remove) return removeAttachment(w, remove);
   if (target.closest("[data-delete-task]")) return deleteTask(w, target.closest("[data-delete-task]"));
+}
+
+// Swaps a subtask's "Unassigned" for a name box. Enter, clicking away or picking a
+// suggestion saves the name; Esc or leaving it blank puts "Unassigned" back.
+function startAssigning(w, button) {
+  const id = button.dataset.assign;
+  const input = textInput({
+    class: "input win-assign-input",
+    maxlength: "60",
+    list: "people-list",
+    placeholder: "Assign to",
+    "aria-label": button.getAttribute("aria-label"),
+    "data-assign-input": id,
+  });
+  let finished = false;
+  const finish = (save, refocus) => {
+    if (finished) return;
+    finished = true;
+    const name = input.value.trim();
+    input.remove();
+    if (!findTask(w.taskId)) return;
+    w.body.querySelector('[data-list="subtasks"]').dataset.sig = "";
+    if (save && name) {
+      updateTask(id, { assignee: name });
+    } else {
+      renderTaskWindow(w);
+      if (refocus) w.body.querySelector(`[data-assign="${CSS.escape(id)}"]`)?.focus();
+    }
+  };
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation(); // Esc here cancels the name, not the whole window
+      finish(false, true);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+  // Typing reports what kind of input it was. Picking a suggestion doesn't count as typing.
+  input.addEventListener("input", (event) => {
+    if (!event.inputType || event.inputType === "insertReplacementText") finish(true);
+  });
+  button.replaceWith(input);
+  input.focus();
 }
 
 async function uploadFiles(w, files) {
