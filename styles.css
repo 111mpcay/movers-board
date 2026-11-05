@@ -796,8 +796,37 @@ body::before {
 }
 .name-tag-x { flex: none; width: 24px; height: 24px; line-height: 1; color: var(--muted); background: none; border: 0; border-radius: 50%; cursor: pointer; }
 .name-tag-x:hover { color: var(--ink); background: var(--line); }
-.cell .name-tags { justify-content: center; margin-bottom: 3px; }
+/* On a row the box is a small + beside the names, and opens up when it's time to type. */
+.cell .name-picker { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px; }
+.cell:has(.name-picker) { padding-inline: 5px; }
+.cell .name-tags { display: contents; }
 .cell .name-tag { padding-left: 8px; font-size: 0.8rem; }
+.cell .name-tag-x { width: 20px; height: 20px; }
+.cell .name-box {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  text-align: center;
+  border: 1px dashed var(--dot-grey);
+  border-radius: 50%;
+  cursor: pointer;
+}
+.cell .name-box::placeholder { font-weight: 700; color: var(--muted); opacity: 1; }
+.cell .name-box:hover { border-color: var(--orange); }
+.cell .name-box:hover::placeholder { color: var(--orange); }
+.cell .name-box:focus {
+  flex: 1 1 100%;
+  width: 100%;
+  height: auto;
+  min-height: 30px;
+  padding: 4px 8px;
+  text-align: left;
+  border: 1px solid var(--orange);
+  border-radius: 4px;
+  cursor: text;
+}
+.cell .name-box:focus::placeholder { color: transparent; }
 
 /* Notifications. The top bar has to rise above open windows while the list is showing. */
 .topbar:has(.notify-panel:not([hidden])) { z-index: 6000; }
@@ -1051,6 +1080,7 @@ body::before {
     color: var(--muted);
   }
   .cell-input { text-align: left; padding-inline: 0; }
+  .cell .name-picker { justify-content: flex-start; }
   .cell-progress { grid-column: 1 / -1; }
   .quick-add { margin-top: 10px; }
   .quick-hint { grid-column: 1 / -1; border-left: 0; }

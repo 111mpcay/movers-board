@@ -573,7 +573,8 @@ function rowPicker(task) {
   const picker = namePicker({
     label: `Who ${task.title} is assigned to`,
     names: task.assignees,
-    placeholder: "Assign",
+    placeholder: "+",
+    title: "Assign someone",
     boxClass: "cell-input assign-input",
     onChange(names) {
       // Saving redraws the row, which would otherwise lose the cursor.
@@ -1111,10 +1112,10 @@ function section(heading, ...children) {
 
 // Names as removable tags, with a box to add more. Enter, a comma, clicking away or picking
 // a suggestion adds what's typed, and names separated by commas add together.
-function namePicker({ label, names = [], placeholder = "Add a name", boxClass = "input", skip = null, onChange = null }) {
+function namePicker({ label, names = [], placeholder = "Add a name", title = null, boxClass = "input", skip = null, onChange = null }) {
   let current = [...names];
   const tags = el("ul", { class: "name-tags" });
-  const box = textInput({ class: `${boxClass} name-box`, maxlength: "200", list: "people-list", placeholder, "aria-label": label });
+  const box = textInput({ class: `${boxClass} name-box`, maxlength: "200", list: "people-list", placeholder, title, "aria-label": label });
   const render = () => tags.replaceChildren(...current.map((name) => el("li", { class: "name-tag" }, name,
     el("button", { class: "name-tag-x", type: "button", "aria-label": `Remove ${name}`, "data-name": name }, "×"))));
   const add = (text) => {
