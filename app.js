@@ -40,6 +40,7 @@ const state = {
   lastDrop: 0,
   writes: 0, // bumps on every change so a slower, older read can't undo it
   pollTimer: null,
+  onWindowEntry: !!history.state?.boardWindow, // whether this history entry was added for a phone's window
   windows: new Map(),
   windowCount: 0,
   topZ: 100,
@@ -435,6 +436,7 @@ function setRenaming(on) {
 }
 
 window.addEventListener("hashchange", () => {
+  state.onWindowEntry = !!history.state?.boardWindow;
   if (!$("gate").hidden) return;
   showProjectError("project-error", null);
   setRenaming(false);
@@ -559,7 +561,11 @@ function renderRow(task) {
       el("span", { class: "grip", "aria-hidden": "true" }),
       el("div", { class: "task-text" },
         el("button", { class: "task-title", type: "button" }, task.title),
-        el("div", { class: "task-meta" }, `${task.updated_by} · ${timeAgo(task.updated_at)}${subtaskSummary(task)}`))),
+        el("div", { class: "task-meta" }, `${task.updated_by} · ${timeAgo(task.updated_at)}${subtaskSummary(task)}`)),
+      // Only shows on phones, in place of the columns.
+      el("div", { class: "task-glance", role: "img", "aria-label": `Urgency ${URGENCY[task.urgency]}, status ${STATUS[task.status]}, progress ${task.progress}%` },
+        el("span", { class: "task-glance-line" }, el("span", { class: `dot dot-${task.urgency}` }), STATUS[task.status]),
+        el("span", { class: "task-glance-line" }, el("span", { class: "task-glance-bar" }, el("i", { style: `width: ${task.progress}%` })), `${task.progress}%`))),
     cell("Assign", el("input", {
       class: "cell-input assign-input",
       type: "text",
@@ -941,6 +947,7 @@ function closeAllWindows() {
 
 function minimizeWindow(w) {
   w.root.hidden = true;
+  w.hasEntry = false;
   w.chip = el("button", { class: "win-chip", type: "button" }, w.titleEl.textContent);
   w.chip.addEventListener("click", () => showWindow(w));
   $("window-tray").append(w.chip);
@@ -952,13 +959,40 @@ function showWindow(w) {
   w.root.hidden = false;
   focusWindow(w);
   w.root.focus({ preventScroll: true });
+  // On a phone a window fills the screen like a page, so the phone's Back should close it.
+  if (isPhone() && !w.hasEntry) {
+    history.pushState({ boardWindow: true }, "");
+    w.hasEntry = true;
+    state.onWindowEntry = true;
+  }
 }
+
+// Back closes the window through its history entry, so the two go together.
+function goBack(w) {
+  if (w.hasEntry) history.back();
+  else closeWindow(w);
+}
+
+function topWindow() {
+  const open = [...state.windows.values()].filter((w) => !w.root.hidden);
+  return open.sort((a, b) => Number(b.root.style.zIndex) - Number(a.root.style.zIndex))[0];
+}
+
+window.addEventListener("popstate", (event) => {
+  const leftWindowEntry = state.onWindowEntry;
+  state.onWindowEntry = !!event.state?.boardWindow;
+  const top = topWindow();
+  if (top?.hasEntry) closeWindow(top);
+  // That entry's window had already closed another way, so this press hasn't done anything yet.
+  else if (leftWindowEntry && $("gate").hidden) history.back();
+});
 
 function createWindow(key, title) {
   const titleEl = el("span", { class: "win-title" }, title);
+  const back = el("button", { class: "win-back", type: "button" }, "‹ Back");
   const minimize = el("button", { class: "win-btn", type: "button", "aria-label": "Minimize" }, "–");
-  const close = el("button", { class: "win-btn", type: "button", "aria-label": "Close" }, "×");
-  const bar = el("header", { class: "win-bar" }, titleEl, minimize, close);
+  const close = el("button", { class: "win-btn win-close", type: "button", "aria-label": "Close" }, "×");
+  const bar = el("header", { class: "win-bar" }, back, titleEl, minimize, close);
   const body = el("div", { class: "win-body" });
   const grip = el("div", { class: "win-grip", "aria-hidden": "true" });
   const root = el("section", { class: "win", role: "dialog", "aria-label": title, tabindex: "-1" }, bar, body, grip);
@@ -981,6 +1015,7 @@ function createWindow(key, title) {
   root.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeWindow(w);
   });
+  back.addEventListener("click", () => goBack(w));
   minimize.addEventListener("click", () => minimizeWindow(w));
   close.addEventListener("click", () => closeWindow(w));
   trackPointer(bar, () => ({ x: w.x, y: w.y }), (dx, dy, from) => {
