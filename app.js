@@ -23,6 +23,7 @@ const OPENS_IN_BROWSER = /^(image\/(png|jpeg|gif|webp)|application\/pdf|text\/pl
 const WANTS_DEMO = location.hostname === "localhost" && new URLSearchParams(location.search).has("demo");
 const SESSION_KEY = WANTS_DEMO ? "board.session.demo" : "board.session";
 const NAME_KEY = "board.lastName";
+const ONLY_MINE_KEY = "board.onlyMine";
 
 const state = {
   store: null,
@@ -30,6 +31,8 @@ const state = {
   projectId: null, // the project whose page is showing; null on the cards screen
   leavingProject: null, // a project this person is deleting, so its page goes quietly
   tasks: [],
+  onlyMine: readStorage("localStorage", ONLY_MINE_KEY) === "1",
+  keepShown: new Set(), // tasks just added, which stay in view under the filter until it's next changed
   meetings: [],
   weekStart: startOfWeek(new Date()), // the Monday of the week the calendar is showing
   notifications: [],
@@ -109,6 +112,7 @@ const clockValue = (date) => `${pad2(date.getHours())}:${pad2(date.getMinutes())
 const formatDay = (date) => date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 const formatTime = (date) => date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 const personKey = (name) => String(name || "").trim().toLowerCase();
+const splitNames = (text) => String(text || "").split(",").map((name) => name.trim().slice(0, 60)).filter(Boolean);
 function formatSize(bytes) {
   if (bytes == null) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -146,7 +150,8 @@ function linkStatusAndProgress(task, changes) {
 function onlyChanged(task, changes) {
   const diff = {};
   for (const [key, value] of Object.entries(changes)) {
-    if ((task[key] ?? "") !== (value ?? "")) diff[key] = value;
+    const same = Array.isArray(value) ? JSON.stringify(task[key]) === JSON.stringify(value) : (task[key] ?? "") === (value ?? "");
+    if (!same) diff[key] = value;
   }
   return diff;
 }
@@ -320,6 +325,7 @@ function showGate(message) {
   state.projects = [];
   state.projectId = null;
   state.tasks = [];
+  state.keepShown.clear();
   state.meetings = [];
   state.weekStart = startOfWeek(new Date());
   state.notifications = [];
@@ -558,9 +564,25 @@ function subtaskSummary(task) {
 
 function rowSignature(task) {
   return JSON.stringify([
-    task.title, task.assignee, task.urgency, task.deadline, task.status, task.progress,
+    task.title, task.assignees, task.urgency, task.deadline, task.status, task.progress,
     task.updated_by, timeAgo(task.updated_at), deadlineNote(task)?.text, subtaskSummary(task),
   ]);
+}
+
+function rowPicker(task) {
+  const picker = namePicker({
+    label: `Who ${task.title} is assigned to`,
+    names: task.assignees,
+    placeholder: "Assign",
+    boxClass: "cell-input assign-input",
+    onChange(names) {
+      // Saving redraws the row, which would otherwise lose the cursor.
+      const keepCursor = picker.root.contains(document.activeElement);
+      updateTask(task.id, { assignees: names });
+      if (keepCursor) $("task-rows").querySelector(`[data-id="${CSS.escape(task.id)}"] .name-box`)?.focus();
+    },
+  });
+  return picker.root;
 }
 
 function renderRow(task) {
@@ -586,17 +608,7 @@ function renderRow(task) {
       el("div", { class: "task-glance", role: "img", "aria-label": `Urgency ${URGENCY[task.urgency]}, status ${STATUS[task.status]}, progress ${task.progress}%` },
         el("span", { class: "task-glance-line" }, el("span", { class: `dot dot-${task.urgency}` }), STATUS[task.status]),
         el("span", { class: "task-glance-line" }, el("span", { class: "task-glance-bar" }, el("i", { style: `width: ${task.progress}%` })), `${task.progress}%`))),
-    cell("Assign", el("input", {
-      class: "cell-input assign-input",
-      type: "text",
-      maxlength: "60",
-      list: "people-list",
-      placeholder: "Assign",
-      value: task.assignee || "",
-      autocomplete: "off",
-      "data-field": "assignee",
-      "aria-label": `Who ${task.title} is assigned to`,
-    })),
+    cell("Assign", rowPicker(task)),
     cell("Urgency", dotSelect("urgency", task.urgency, URGENCY, `Urgency of ${task.title}`)),
     cell("Deadline",
       el("input", {
@@ -628,7 +640,7 @@ function renderSummary() {
 function renderPeople() {
   const names = new Set([state.name, ...state.people]);
   for (const task of state.tasks) {
-    for (const name of [task.assignee, task.created_by, task.updated_by]) {
+    for (const name of [...task.assignees, task.created_by, task.updated_by]) {
       if (name) names.add(name);
     }
   }
@@ -639,13 +651,29 @@ function renderPeople() {
   $("people-list").replaceChildren(...[...names].sort().map((name) => el("option", { value: name })));
 }
 
+// Yours if you're on it, or on one of its subtasks, which you'd otherwise have no way to reach.
+function isMine(task) {
+  const onIt = (t) => t.assignees.some((name) => personKey(name) === personKey(state.name));
+  return onIt(task) || subtasksOf(task.id).some(onIt);
+}
+
+// A task someone just added stays on screen even if the filter would hide it.
+function keepInView(id) {
+  state.keepShown.add(id);
+  renderRows();
+}
+
 // Updates rows in place so someone mid-edit keeps their cursor when another
 // person's change arrives. The row being edited catches up when they leave it.
 function renderRows() {
   const list = $("task-rows");
   const focused = document.activeElement;
   const activeRow = focused?.closest?.(".task-row") || null;
-  const tasks = state.tasks.filter((t) => !t.parent_id && t.project_id === state.projectId).sort((a, b) => a.position - b.position);
+  const inProject = state.tasks.filter((t) => !t.parent_id && t.project_id === state.projectId).sort((a, b) => a.position - b.position);
+  const tasks = state.onlyMine ? inProject.filter((t) => isMine(t) || state.keepShown.has(t.id)) : inProject;
+  $("only-mine").textContent = `Assigned to me (${inProject.filter(isMine).length})`;
+  $("only-mine").setAttribute("aria-pressed", String(state.onlyMine));
+  list.classList.toggle("is-filtered", state.onlyMine);
   const existing = new Map([...list.children].map((row) => [row.dataset.id, row]));
   const wanted = new Set(tasks.map((t) => t.id));
   existing.forEach((row, id) => { if (!wanted.has(id)) row.remove(); });
@@ -706,7 +734,7 @@ function fieldValue(control) {
   const field = control.dataset.field;
   if (field === "progress") return Number(control.value);
   if (field === "deadline") return control.value || null;
-  if (field === "assignee" || field === "title" || field === "details") return control.value.trim();
+  if (field === "title" || field === "details") return control.value.trim();
   return control.value;
 }
 
@@ -728,11 +756,11 @@ rows.addEventListener("change", (event) => {
 
 rows.addEventListener("input", previewProgress);
 
-rows.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && event.target.dataset.field === "assignee") {
-    event.preventDefault();
-    event.target.blur();
-  }
+$("only-mine").addEventListener("click", () => {
+  state.onlyMine = !state.onlyMine;
+  writeStorage("localStorage", ONLY_MINE_KEY, state.onlyMine ? "1" : null);
+  state.keepShown.clear();
+  renderRows();
 });
 
 rows.addEventListener("click", (event) => {
@@ -851,7 +879,10 @@ $("quick-add").addEventListener("submit", async (event) => {
   $("quick-submit").disabled = true;
   const added = await write(() => state.store.save(null, { title, project_id: state.projectId }), "That task didn't save. Check your connection and try again.");
   $("quick-submit").disabled = false;
-  if (added.ok) $("quick-title").value = "";
+  if (added.ok) {
+    $("quick-title").value = "";
+    keepInView(added.result.id);
+  }
   $("quick-title").focus();
 });
 
@@ -1078,12 +1109,71 @@ function section(heading, ...children) {
   return el("section", { class: "win-section" }, el("h3", { class: "win-heading" }, heading), ...children);
 }
 
-function taskFields() {
+// Names as removable tags, with a box to add more. Enter, a comma, clicking away or picking
+// a suggestion adds what's typed, and names separated by commas add together.
+function namePicker({ label, names = [], placeholder = "Add a name", boxClass = "input", skip = null, onChange = null }) {
+  let current = [...names];
+  const tags = el("ul", { class: "name-tags" });
+  const box = textInput({ class: `${boxClass} name-box`, maxlength: "200", list: "people-list", placeholder, "aria-label": label });
+  const render = () => tags.replaceChildren(...current.map((name) => el("li", { class: "name-tag" }, name,
+    el("button", { class: "name-tag-x", type: "button", "aria-label": `Remove ${name}`, "data-name": name }, "×"))));
+  const add = (text) => {
+    const before = current.length;
+    for (const name of splitNames(text)) {
+      const key = personKey(name);
+      if (key !== personKey(skip) && !current.some((other) => personKey(other) === key)) current.push(name);
+    }
+    if (current.length === before) return;
+    render();
+    onChange?.([...current]);
+  };
+  const take = () => {
+    const typed = box.value;
+    box.value = "";
+    add(typed);
+  };
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      take();
+    }
+  });
+  box.addEventListener("blur", take);
+  // Typing reports what kind of input it was. Picking a suggestion doesn't count as typing.
+  // Phone keyboards often don't say which key was pressed, so a comma is spotted in the text.
+  box.addEventListener("input", (event) => {
+    if (!event.inputType || event.inputType === "insertReplacementText" || box.value.includes(",")) take();
+  });
+  tags.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-name]");
+    if (!remove) return;
+    current = current.filter((name) => name !== remove.dataset.name);
+    render();
+    box.focus();
+    onChange?.([...current]);
+  });
+  render();
+  return {
+    root: el("div", { class: "name-picker" }, tags, box),
+    add,
+    names() {
+      take();
+      return [...current];
+    },
+    set(next) {
+      if (JSON.stringify(next) === JSON.stringify(current)) return;
+      current = [...next];
+      render();
+    },
+  };
+}
+
+function taskFields(assignPicker) {
   return [
     field("Task", textInput({ maxlength: "200", "data-field": "title" })),
     field("Details", el("textarea", { class: "input", rows: "2", maxlength: "4000", "data-field": "details" })),
     el("div", { class: "field-row" },
-      field("Assign to", textInput({ maxlength: "60", list: "people-list", "data-field": "assignee" })),
+      el("div", { class: "field" }, el("span", { class: "label" }, "Assign to"), assignPicker.root),
       field("Deadline", el("input", { class: "input", type: "date", "data-field": "deadline" }),
         el("span", { class: "due-note", "data-deadline-note": true }))),
     el("div", { class: "field-row" },
@@ -1110,9 +1200,10 @@ function openTask(id) {
 
 function buildTaskWindow(w, task) {
   const isSubtask = !!task.parent_id;
+  w.assignPicker = namePicker({ label: "Assign to", names: task.assignees, onChange: (names) => updateTask(w.taskId, { assignees: names }) });
   const parts = [
     isSubtask && el("p", { class: "win-parent" }, "Part of ", el("button", { class: "link-btn", type: "button", "data-open-task": task.parent_id }, "")),
-    ...taskFields(),
+    ...taskFields(w.assignPicker),
     !isSubtask && field("Project", el("select", { class: "input", "data-field": "project_id" })),
     field("Progress", el("div", { class: "progress-wrap progress-wrap-large" },
       el("output", { class: "progress-label" }, "0%"),
@@ -1123,7 +1214,7 @@ function buildTaskWindow(w, task) {
       el("ul", { class: "win-list", "data-list": "subtasks" }),
       el("form", { class: "win-form", "data-form": "subtask", novalidate: true },
         textInput({ maxlength: "200", placeholder: "Add a subtask", "aria-label": "New subtask", "data-input": "title" }),
-        textInput({ class: "input is-narrow", maxlength: "60", list: "people-list", placeholder: "Assign", "aria-label": "Assign the new subtask to", "data-input": "assignee" }),
+        textInput({ class: "input is-narrow", maxlength: "200", list: "people-list", placeholder: "Assign", "aria-label": "Assign the new subtask to, with commas between names", "data-input": "assignee" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
     el("section", { class: "win-section win-updates" },
       el("h3", { class: "win-heading" }, "Updates"),
@@ -1200,9 +1291,10 @@ function renderTaskWindow(w) {
     projectSelect.replaceChildren(...state.projects.map((p) => el("option", { value: p.id }, p.name)));
     projectSelect.value = task.project_id;
   }
-  for (const name of ["title", "details", "assignee", "deadline", "urgency", "status", "project_id"]) {
+  for (const name of ["title", "details", "deadline", "urgency", "status", "project_id"]) {
     setFieldValue(w, name, task[name]);
   }
+  w.assignPicker.set(task.assignees);
   const range = w.body.querySelector('[data-field="progress"]');
   if (range !== document.activeElement) {
     range.value = task.progress;
@@ -1218,15 +1310,15 @@ function renderTaskWindow(w) {
 
   const subtasks = subtasksOf(task.id);
   setCount(w, "subtasks", subtasks.length ? `${subtasks.filter((s) => s.status === "done").length}/${subtasks.length}` : "");
-  renderList(w, "subtasks", subtasks.map((s) => [s.id, s.title, s.assignee, s.status, deadlineNote(s)?.text]), () =>
+  renderList(w, "subtasks", subtasks.map((s) => [s.id, s.title, s.assignees, s.status, deadlineNote(s)?.text]), () =>
     subtasks.length ? subtasks.map((s) => {
       const due = deadlineNote(s);
       return el("li", { class: "win-item" },
         el("input", { type: "checkbox", "data-done": s.id, checked: s.status === "done", "aria-label": `Mark ${s.title} done` }),
         el("span", { class: "win-item-main" },
           el("button", { class: `link-btn${s.status === "done" ? " subtask-done" : ""}`, type: "button", "data-open-task": s.id }, s.title)),
-        s.assignee
-          ? el("span", { class: "win-meta" }, s.assignee)
+        s.assignees.length
+          ? el("span", { class: "win-meta" }, s.assignees.join(", "))
           : el("button", { class: "link-btn win-meta", type: "button", "data-assign": s.id, "aria-label": `Assign ${s.title}` }, "Unassigned"),
         due && el("span", { class: `due-note due-${due.tone}` }, due.text));
     }) : [el("li", { class: "win-empty" }, "No subtasks yet.")]);
@@ -1317,8 +1409,8 @@ async function onWindowSubmit(w, event) {
   if (form.dataset.form === "subtask") {
     const title = input("title").value.trim();
     if (!title) return input("title").focus();
-    const assignee = input("assignee").value.trim();
-    action = () => state.store.save(null, { title, assignee, parent_id: w.taskId });
+    const assignees = splitNames(input("assignee").value);
+    action = () => state.store.save(null, { title, assignees, parent_id: w.taskId });
     failure = "That subtask didn't save. Check your connection and try again.";
     focusAfter = input("title");
   } else if (form.dataset.form === "update") {
@@ -1371,7 +1463,7 @@ function startAssigning(w, button) {
   const id = button.dataset.assign;
   const input = textInput({
     class: "input win-assign-input",
-    maxlength: "60",
+    maxlength: "200",
     list: "people-list",
     placeholder: "Assign to",
     "aria-label": button.getAttribute("aria-label"),
@@ -1386,7 +1478,7 @@ function startAssigning(w, button) {
     if (!findTask(w.taskId)) return;
     w.body.querySelector('[data-list="subtasks"]').dataset.sig = "";
     if (save && name) {
-      updateTask(id, { assignee: name });
+      updateTask(id, { assignees: splitNames(name) });
     } else {
       renderTaskWindow(w);
       if (refocus) w.body.querySelector(`[data-assign="${CSS.escape(id)}"]`)?.focus();
@@ -1505,8 +1597,9 @@ function openNewTask() {
   const w = createWindow("new", "Add task");
   w.height = Math.min(w.height, 470);
   placeWindow(w);
+  w.assignPicker = namePicker({ label: "Assign to" });
   const form = el("form", { class: "win-body", novalidate: true },
-    ...taskFields(),
+    ...taskFields(w.assignPicker),
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
     el("div", { class: "win-new-actions" }, el("button", { class: "btn btn-primary", type: "submit" }, "Add task")));
   w.body.replaceWith(form);
@@ -1531,7 +1624,7 @@ async function submitNewTask(w, event) {
     title,
     project_id: state.projectId,
     details: value("details"),
-    assignee: value("assignee"),
+    assignees: w.assignPicker.names(),
     deadline: value("deadline"),
     urgency: value("urgency"),
   };
@@ -1544,6 +1637,7 @@ async function submitNewTask(w, event) {
   const { x, y, width } = w;
   closeWindow(w);
   if (!findTask(saved.result.id)) state.tasks.push({ attachments: [], updates: [], ...saved.result });
+  keepInView(saved.result.id);
   openTask(saved.result.id);
   const opened = state.windows.get(saved.result.id);
   Object.assign(opened, { x, y, width });
@@ -1840,16 +1934,16 @@ function openMeetingForm({ meeting = null, day = null, person = null } = {}) {
       w.meetingId = meeting.id;
       w.isForm = true;
     }
-    w.invited = [];
     buildMeetingForm(w, meeting);
   }
   if (day) w.body.querySelector('[data-input="date"]').value = day;
-  if (person) addInvited(w, person);
+  if (person) w.invitePicker.add(person);
   showWindow(w);
   w.body.querySelector('[data-input="title"]').focus();
 }
 
 function buildMeetingForm(w, meeting) {
+  if (!meeting) w.invitePicker = namePicker({ label: "People to invite", skip: state.name });
   const form = el("form", { class: "win-body", novalidate: true },
     field("Title", textInput({ maxlength: "200", "data-input": "title" })),
     field("Date", el("input", { class: "input", type: "date", "data-input": "date" })),
@@ -1859,9 +1953,8 @@ function buildMeetingForm(w, meeting) {
     field("Place or link", textInput({ maxlength: "500", "data-input": "place" })),
     field("Notes", el("textarea", { class: "input", rows: "2", maxlength: "4000", "data-input": "notes" })),
     !meeting && el("div", { class: "field" },
-      el("label", { class: "label", for: "meeting-person" }, "People to invite"),
-      el("ul", { class: "meeting-tags", "data-tags": true }),
-      textInput({ id: "meeting-person", maxlength: "60", list: "people-list", placeholder: "Add a name", "data-input": "person" }),
+      el("span", { class: "label" }, "People to invite"),
+      w.invitePicker.root,
       el("p", { class: "hint" }, "Invite nobody to block out your own time.")),
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
     el("div", { class: "win-new-actions" }, el("button", { class: "btn btn-primary", type: "submit" }, meeting ? "Save changes" : "Set meeting")));
@@ -1885,43 +1978,6 @@ function buildMeetingForm(w, meeting) {
     input("end").value = hours >= 23 ? "23:59" : `${pad2(hours + 1)}:${pad2(minutes)}`;
   });
   form.addEventListener("submit", (event) => submitMeetingForm(w, meeting, event));
-  if (meeting) return;
-
-  const box = input("person");
-  const take = () => {
-    addInvited(w, box.value);
-    box.value = "";
-  };
-  box.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === ",") {
-      event.preventDefault();
-      take();
-    }
-  });
-  box.addEventListener("blur", take);
-  // Typing reports what kind of input it was. Picking a suggestion doesn't count as typing.
-  box.addEventListener("input", (event) => {
-    if (!event.inputType || event.inputType === "insertReplacementText") take();
-  });
-  form.addEventListener("click", (event) => {
-    const untag = event.target.closest("[data-untag]");
-    if (!untag) return;
-    w.invited = w.invited.filter((name) => name !== untag.dataset.untag);
-    renderInvited(w);
-    box.focus();
-  });
-}
-
-function addInvited(w, name) {
-  const key = personKey(name);
-  if (!key || key === personKey(state.name) || w.invited.some((other) => personKey(other) === key)) return;
-  w.invited.push(name.trim());
-  renderInvited(w);
-}
-
-function renderInvited(w) {
-  w.body.querySelector("[data-tags]").replaceChildren(...w.invited.map((name) => el("li", { class: "meeting-tag" }, name,
-    el("button", { class: "meeting-tag-x", type: "button", "data-untag": name, "aria-label": `Don't invite ${name}` }, "×"))));
 }
 
 async function submitMeetingForm(w, meeting, event) {
@@ -1946,10 +2002,7 @@ async function submitMeetingForm(w, meeting, event) {
     place: value("place"),
     notes: value("notes"),
   };
-  if (!meeting) {
-    addInvited(w, value("person"));
-    fields.people = [...w.invited];
-  }
+  if (!meeting) fields.people = w.invitePicker.names();
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
   const saved = await write(() => state.store.saveMeeting(meeting?.id ?? null, fields), null);

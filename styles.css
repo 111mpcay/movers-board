@@ -354,6 +354,9 @@ body::before {
   background: var(--surface);
   border-inline: 1px solid var(--line);
 }
+.task-rows.is-filtered:empty::before { content: "Nothing in this project is assigned to you."; }
+.task-filter { margin-bottom: 12px; }
+#only-mine[aria-pressed="true"] { color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
 
 .task-row, .quick-add {
   position: relative;
@@ -775,9 +778,12 @@ body::before {
 .btn-accept:hover:not(:disabled) { filter: brightness(0.93); }
 .btn-decline { color: var(--danger); background: transparent; border-color: var(--danger); }
 .btn-decline:hover:not(:disabled) { background: var(--danger-bg); }
-.meeting-tags { list-style: none; display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
-.meeting-tags:empty { display: none; }
-.meeting-tag {
+
+/* Names as removable tags, with a box to add more */
+.name-picker { width: 100%; min-width: 0; }
+.name-tags { list-style: none; display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
+.name-tags:empty { display: none; }
+.name-tag {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -788,8 +794,10 @@ body::before {
   background: var(--surface-2);
   border-radius: 13px;
 }
-.meeting-tag-x { flex: none; width: 24px; height: 24px; line-height: 1; color: var(--muted); background: none; border: 0; border-radius: 50%; cursor: pointer; }
-.meeting-tag-x:hover { color: var(--ink); background: var(--line); }
+.name-tag-x { flex: none; width: 24px; height: 24px; line-height: 1; color: var(--muted); background: none; border: 0; border-radius: 50%; cursor: pointer; }
+.name-tag-x:hover { color: var(--ink); background: var(--line); }
+.cell .name-tags { justify-content: center; margin-bottom: 3px; }
+.cell .name-tag { padding-left: 8px; font-size: 0.8rem; }
 
 /* Notifications. The top bar has to rise above open windows while the list is showing. */
 .topbar:has(.notify-panel:not([hidden])) { z-index: 6000; }
