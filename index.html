@@ -105,6 +105,9 @@
         <h1 id="project-title" class="page-title"></h1>
         <form id="rename-project-form" class="inline-form" novalidate hidden>
           <input id="rename-project-name" class="input" type="text" maxlength="120" aria-label="Project name" autocomplete="off">
+          <fieldset id="rename-project-colors" class="color-swatches">
+            <legend class="label">Card color</legend>
+          </fieldset>
           <button class="btn btn-primary" type="submit">Save</button>
           <button id="rename-project-cancel" class="btn btn-quiet" type="button">Cancel</button>
         </form>
@@ -113,7 +116,7 @@
           <span id="project-percent" class="project-percent"></span>
         </div>
         <span class="spacer"></span>
-        <button id="rename-project-btn" class="btn btn-quiet btn-small" type="button">Rename</button>
+        <button id="rename-project-btn" class="btn btn-quiet btn-small" type="button">Edit</button>
         <button id="delete-project-btn" class="btn btn-danger btn-small" type="button">Delete project</button>
       </div>
       <p id="project-error" class="form-error" role="alert" hidden></p>

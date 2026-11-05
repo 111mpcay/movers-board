@@ -430,8 +430,12 @@ function setRenaming(on) {
   $("project-title").hidden = on;
   $("rename-project-btn").hidden = on;
   if (on) {
+    const project = state.projects.find((p) => p.id === state.projectId);
+    const color = project?.color || "default";
+    $("rename-project-form").dataset.color = color;
+    $("rename-project-form").querySelector(`[value="${color}"]`).checked = true;
     const input = $("rename-project-name");
-    input.value = state.projects.find((p) => p.id === state.projectId)?.name || "";
+    input.value = project?.name || "";
     input.focus();
     input.select();
   }
@@ -454,10 +458,14 @@ $("project-cards").addEventListener("click", (event) => {
   }
 });
 
-$("new-project-colors").append(...Object.entries(PROJECT_COLORS).map(([color, label]) =>
-  el("label", { class: `color-swatch color-${color}`, title: label },
-    el("input", { type: "radio", name: "project-color", value: color, checked: color === "default", "aria-label": label }),
-    el("i", { "aria-hidden": "true" }))));
+function colorSwatches() {
+  return Object.entries(PROJECT_COLORS).map(([color, label]) =>
+    el("label", { class: `color-swatch color-${color}`, title: label },
+      el("input", { type: "radio", name: "project-color", value: color, checked: color === "default", "aria-label": label }),
+      el("i", { "aria-hidden": "true" })));
+}
+$("new-project-colors").append(...colorSwatches());
+$("rename-project-colors").append(...colorSwatches());
 
 function setAddingProject(on) {
   $("new-project-form").hidden = !on;
@@ -488,12 +496,16 @@ $("rename-project-form").addEventListener("submit", async (event) => {
   const name = $("rename-project-name").value.trim();
   if (!name) return $("rename-project-name").focus();
   const id = state.projectId;
-  const saved = await write(() => state.store.saveProject(id, name), null);
+  // Sends the color only if it changed here, so a name change can't undo someone else's color.
+  const form = $("rename-project-form");
+  const picked = form.querySelector('[name="project-color"]:checked').value;
+  const color = picked === form.dataset.color ? undefined : picked;
+  const saved = await write(() => state.store.saveProject(id, name, color), null);
   if (saved.ok) {
     showProjectError("project-error", null);
     setRenaming(false);
   } else {
-    showProjectError("project-error", "That name didn't save. Check your connection and try again.");
+    showProjectError("project-error", "That didn't save. Check your connection and try again.");
   }
 });
 
