@@ -2,6 +2,9 @@
 
 const STATUS = { todo: "To do", doing: "In progress", done: "Done" };
 const URGENCY = { low: "Low", normal: "Normal", high: "High", critical: "Critical" };
+// Picked by eye rather than spaced evenly, since evenly spaced hues mostly look green.
+const PERSON_HUES = [0, 25, 42, 56, 80, 125, 165, 188, 205, 222, 245, 268, 288, 310, 330, 347];
+const PERSON_COLOR_COUNT = PERSON_HUES.length;
 const PROJECT_COLORS = { default: "Default", navy: "Navy", blue: "Blue", teal: "Teal", green: "Green", orange: "Orange", red: "Red", pink: "Pink", purple: "Purple" };
 const ANSWER = { waiting: "No answer yet", accepted: "Accepted", declined: "Declined" };
 const MEETING_NOTICE = {
@@ -38,6 +41,8 @@ const state = {
   notifications: [],
   deleted: [], // what was deleted lately, so a page that had it open can say who did it
   people: [],
+  personColors: new Map(), // each person's slot in the palette
+  personColorsFor: "", // who those slots were worked out for
   version: -1,
   name: "",
   dragging: false,
@@ -331,6 +336,8 @@ function showGate(message) {
   state.notifications = [];
   state.deleted = [];
   state.people = [];
+  state.personColors = new Map();
+  state.personColorsFor = "";
   state.version = -1;
   state.store.setToken(null);
   $("task-rows").replaceChildren();
@@ -697,6 +704,7 @@ function renderRows() {
 }
 
 function renderBoard() {
+  assignPersonColors();
   renderWindows(); // first, so a deleted project's note replaces the notes for its tasks
   syncRoute();
   renderProjectCards();
@@ -1110,13 +1118,47 @@ function section(heading, ...children) {
   return el("section", { class: "win-section" }, el("h3", { class: "win-heading" }, heading), ...children);
 }
 
+function hashName(key) {
+  let hash = 2166136261;
+  for (const char of key) hash = Math.imul(hash ^ char.codePointAt(0), 16777619);
+  return hash >>> 0;
+}
+
+// Each person starts from a slot worked out from their name and jumps along if it's taken,
+// far enough to land on a clearly different color. Going through everyone in the same order
+// means every page agrees, and nobody matches until the board has more people than colors.
+// Someone new can move a person whose slot they land on, so the colors are only
+// recalculated when the list of people changes.
+function assignPersonColors() {
+  const keys = [...new Set([...state.people, ...state.tasks.flatMap((t) => t.assignees)].map(personKey).filter(Boolean))].sort();
+  const everyone = keys.join("\n");
+  if (everyone === state.personColorsFor) return;
+  state.personColorsFor = everyone;
+  const taken = new Set();
+  state.personColors = new Map(keys.map((key) => {
+    let slot = hashName(key) % PERSON_COLOR_COUNT;
+    // A jump of 7 reaches all 16 slots before repeating.
+    for (let tries = 0; taken.has(slot) && tries < PERSON_COLOR_COUNT; tries++) slot = (slot + 7) % PERSON_COLOR_COUNT;
+    taken.add(slot);
+    return [key, slot];
+  }));
+  document.querySelectorAll(".name-tag[data-person]").forEach((tag) => {
+    tag.style.cssText = personColorStyle(personColor(tag.dataset.person));
+  });
+}
+
+const personColor = (name) => state.personColors.get(personKey(name)) ?? hashName(personKey(name)) % PERSON_COLOR_COUNT;
+
+// Every other color is deeper, so neighbours on the wheel still look different.
+const personColorStyle = (slot) => `--person-hue: ${PERSON_HUES[slot]}; --person-tier: ${slot % 2}`;
+
 // Names as removable tags, with a box to add more. Enter, a comma, clicking away or picking
 // a suggestion adds what's typed, and names separated by commas add together.
 function namePicker({ label, names = [], placeholder = "Add a name", title = null, boxClass = "input", skip = null, onChange = null }) {
   let current = [...names];
   const tags = el("ul", { class: "name-tags" });
   const box = textInput({ class: `${boxClass} name-box`, maxlength: "200", list: "people-list", placeholder, title, "aria-label": label });
-  const render = () => tags.replaceChildren(...current.map((name) => el("li", { class: "name-tag" }, name,
+  const render = () => tags.replaceChildren(...current.map((name) => el("li", { class: "name-tag", style: personColorStyle(personColor(name)), "data-person": name }, name,
     el("button", { class: "name-tag-x", type: "button", "aria-label": `Remove ${name}`, "data-name": name }, "×"))));
   const add = (text) => {
     const before = current.length;
