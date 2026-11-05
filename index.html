@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex">
+  <title>Movers Board</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Entry screen: PIN and name -->
+  <main id="gate" class="gate">
+    <form id="gate-form" class="gate-card" novalidate>
+      <header class="gate-band">
+        <h1 class="wordmark">Movers Board</h1>
+      </header>
+      <div class="gate-body">
+        <p class="gate-intro">Enter the PIN you were given, then tell the team who you are.</p>
+
+        <fieldset class="field pin-field">
+          <legend class="label">4-digit PIN</legend>
+          <div class="pin-boxes">
+            <input id="pin-1" class="pin-box" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="PIN digit 1">
+            <input id="pin-2" class="pin-box" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="PIN digit 2">
+            <input id="pin-3" class="pin-box" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="PIN digit 3">
+            <input id="pin-4" class="pin-box" type="password" inputmode="numeric" maxlength="4" autocomplete="off" aria-label="PIN digit 4">
+          </div>
+        </fieldset>
+
+        <div class="field">
+          <label class="label" for="name-input">Your name</label>
+          <input id="name-input" class="input" type="text" maxlength="40" autocomplete="name">
+          <p class="hint">Shown on every task you add or change.</p>
+        </div>
+
+        <p id="gate-error" class="form-error" role="alert" hidden></p>
+        <button id="gate-submit" class="btn btn-primary btn-wide" type="submit">Enter board</button>
+      </div>
+    </form>
+  </main>
+
+  <!-- The task list -->
+  <div id="board-view" class="board-view" hidden>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <div class="brand">
+          <span class="wordmark wordmark-small">Movers Board</span>
+          <span id="summary" class="summary"></span>
+        </div>
+        <div class="topbar-actions">
+          <span class="who">You are <strong id="who-name"></strong></span>
+          <button id="leave-btn" class="btn btn-quiet" type="button">Leave</button>
+          <button id="add-btn" class="btn btn-primary" type="button">Add task</button>
+        </div>
+      </div>
+    </header>
+
+    <p id="demo-note" class="note note-demo" hidden>Demo mode: the example tasks and your changes are saved only in this browser.</p>
+    <p id="sync-note" class="note note-warn" role="status" hidden></p>
+
+    <main class="sheet-wrap">
+      <div class="sheet" role="table" aria-label="Task list">
+        <div class="sheet-head" role="row">
+          <div class="head-title" role="columnheader">
+            <span class="head-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="4" width="18" height="16" rx="2"/>
+                <path d="M3 10h18M3 15h18M9 10v10M15 10v10"/>
+              </svg>
+            </span>
+            Task list
+          </div>
+          <div class="head-tab" role="columnheader">Assign</div>
+          <div class="head-tab" role="columnheader">Urgency</div>
+          <div class="head-tab" role="columnheader">Deadline</div>
+          <div class="head-tab" role="columnheader">Status</div>
+          <div class="head-tab" role="columnheader">Progress</div>
+        </div>
+
+        <div id="task-rows" class="task-rows" role="rowgroup"></div>
+
+        <form id="quick-add" class="quick-add" role="row" novalidate>
+          <div class="task-cell quick-cell" role="cell">
+            <input id="quick-title" class="quick-input" type="text" maxlength="200" placeholder="Add a task" aria-label="Add a task" autocomplete="off">
+            <button id="quick-submit" class="btn btn-primary btn-small" type="submit">Add</button>
+          </div>
+          <div class="quick-hint" role="cell">Type a task and press Enter, then fill in its row. Drag a row by its dark cell to reorder it.</div>
+        </form>
+      </div>
+    </main>
+    <datalist id="people-list"></datalist>
+  </div>
+
+  <!-- Add a task with every field, or see a task's details and updates -->
+  <dialog id="task-dialog" class="dialog">
+    <form id="task-form" novalidate>
+      <header class="dialog-head">
+        <h2 id="dialog-title">Add task</h2>
+        <button id="dialog-close" class="icon-btn" type="button" aria-label="Close">&times;</button>
+      </header>
+
+      <div class="field">
+        <label class="label" for="task-title">Task</label>
+        <input id="task-title" class="input" type="text" maxlength="200" autocomplete="off">
+      </div>
+
+      <div class="field">
+        <label class="label" for="task-details">Details <span class="optional">optional</span></label>
+        <textarea id="task-details" class="input" rows="2" maxlength="4000"></textarea>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="label" for="task-assignee">Assign to <span class="optional">optional</span></label>
+          <input id="task-assignee" class="input" type="text" maxlength="60" list="people-list" autocomplete="off">
+        </div>
+        <div class="field">
+          <label class="label" for="task-deadline">Deadline <span class="optional">optional</span></label>
+          <input id="task-deadline" class="input" type="date">
+        </div>
+      </div>
+
+      <fieldset class="field">
+        <legend class="label">Urgency</legend>
+        <div class="segmented">
+          <label><input id="urgency-low" type="radio" name="urgency" value="low"><span>Low</span></label>
+          <label><input id="urgency-normal" type="radio" name="urgency" value="normal"><span>Normal</span></label>
+          <label><input id="urgency-high" type="radio" name="urgency" value="high"><span>High</span></label>
+          <label><input id="urgency-critical" type="radio" name="urgency" value="critical"><span>Critical</span></label>
+        </div>
+      </fieldset>
+
+      <div class="field-row">
+        <div class="field">
+          <label class="label" for="task-status">Status</label>
+          <select id="task-status" class="input"></select>
+        </div>
+        <div class="field">
+          <label class="label" for="task-progress">Progress</label>
+          <div class="progress-wrap progress-wrap-large">
+            <output id="task-progress-label" class="progress-label" for="task-progress">0%</output>
+            <input id="task-progress" class="progress-range" type="range" min="0" max="100" step="5" value="0">
+          </div>
+        </div>
+      </div>
+
+      <p id="task-error" class="form-error" role="alert" hidden></p>
+
+      <div class="dialog-actions">
+        <button id="task-delete" class="btn btn-danger" type="button" hidden>Delete</button>
+        <span class="spacer"></span>
+        <button id="task-cancel" class="btn btn-quiet" type="button">Cancel</button>
+        <button id="task-save" class="btn btn-primary" type="submit">Save task</button>
+      </div>
+    </form>
+
+    <section id="activity" class="activity" hidden>
+      <h3 class="label">Updates</h3>
+      <div class="update-compose">
+        <input id="update-input" class="input" type="text" maxlength="1000" placeholder="Add an update on this task" aria-label="Add an update on this task" autocomplete="off">
+        <button id="update-post" class="btn btn-quiet" type="button">Post</button>
+      </div>
+      <ul id="activity-list" class="activity-list"></ul>
+    </section>
+  </dialog>
+
+  <script src="config.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
