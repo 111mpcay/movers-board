@@ -31,6 +31,7 @@
   --ok-fg: #067a47;
   --on-green: #06291a;
   --today-bg: #fff8ef;
+  --updates-bg: #fff1dc;
   --shadow-lift: 0 10px 24px rgb(23 48 74 / 0.28);
   --topbar-h: 61px;
   --cols: minmax(240px, 2.3fr) minmax(110px, 1fr) minmax(120px, 1fr) minmax(140px, 1.05fr) minmax(130px, 1fr) minmax(170px, 1.5fr);
@@ -66,6 +67,7 @@
     --ok-bg: #123d2a;
     --ok-fg: #6be3ad;
     --today-bg: #262217;
+    --updates-bg: #37290f;
     --shadow-lift: 0 10px 24px rgb(0 0 0 / 0.6);
     color-scheme: dark;
   }
@@ -96,6 +98,7 @@
   --ok-bg: #123d2a;
   --ok-fg: #6be3ad;
   --today-bg: #262217;
+  --updates-bg: #37290f;
   --shadow-lift: 0 10px 24px rgb(0 0 0 / 0.6);
   color-scheme: dark;
 }
@@ -137,7 +140,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .hint { font-size: 0.82rem; color: var(--muted); margin-top: 6px; }
 
 .field { display: flex; flex-direction: column; min-width: 0; }
-.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 
 .input {
   width: 100%;
@@ -750,7 +753,6 @@ body::before {
 .btn-accept:hover:not(:disabled) { filter: brightness(0.93); }
 .btn-decline { color: var(--danger); background: transparent; border-color: var(--danger); }
 .btn-decline:hover:not(:disabled) { background: var(--danger-bg); }
-.meeting-times { grid-template-columns: 1fr 1fr; }
 .meeting-tags { list-style: none; display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
 .meeting-tags:empty { display: none; }
 .meeting-tag {
@@ -911,6 +913,20 @@ body::before {
   border-bottom: 2px solid var(--orange);
 }
 .win-section { display: flex; flex-direction: column; }
+/* The part of a task people check most, so it's the one that stands out. */
+.win-updates {
+  padding: 12px 13px 13px;
+  background: var(--updates-bg);
+  border-left: 5px solid var(--orange);
+  border-radius: 7px;
+}
+.win-updates .win-heading { font-size: 0.92rem; }
+.win-updates [data-list="updates"] > li:not(.win-empty) {
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
 .win-fold > summary { cursor: pointer; }
 .win-fold:not([open]) > summary { margin-bottom: 0; }
 .win-count { margin-left: 6px; font-weight: 600; color: var(--muted); }
@@ -1011,6 +1027,10 @@ body::before {
 
   .topbar-actions { width: 100%; }
   .topbar-actions .who { flex: 1; }
+
+  /* Phones zoom in when a field's text is under 16px, and the zoomed view slides sideways.
+     This width takes in a phone held sideways too. */
+  input:not([type="range"]), select, textarea { font-size: 16px !important; }
 }
 
 /* Phones: dragging doesn't work well here, so windows fill the screen and stack, and
@@ -1022,6 +1042,14 @@ body::before {
   .task-cell { min-height: 58px; padding-block: 9px; }
   .task-text { flex: 1; }
   .task-glance { display: flex; }
+
+  /* Pages only move up and down, and what's behind a full-screen view stays still. */
+  body { overflow-x: clip; }
+  body:has(.win:not([hidden])), body:has(.notify-panel:not([hidden])) { overflow: hidden; }
+  .win-body { overflow-x: hidden; touch-action: pan-y pinch-zoom; overscroll-behavior-y: contain; }
+  .win-form .is-narrow { flex-basis: 136px; }
+  /* iPhones draw these wider than the box they're given unless told otherwise. */
+  .input[type="date"], .input[type="time"] { min-width: 0; max-width: 100%; appearance: none; -webkit-appearance: none; }
 
   /* The button sits anywhere along the top bar, so the list can't hang from it. */
   .notify-panel { position: fixed; inset: 0; width: auto; max-height: none; border: 0; border-radius: 0; box-shadow: none; overscroll-behavior: contain; }
@@ -1040,7 +1068,7 @@ body::before {
 }
 
 @media (max-width: 480px) {
-  .field-row { grid-template-columns: 1fr; }
+  .field-row { grid-template-columns: minmax(0, 1fr); }
   .gate-band { padding-inline: 20px; }
   .gate-body { padding-inline: 20px; }
 }

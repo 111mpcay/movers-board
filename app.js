@@ -40,7 +40,7 @@ const state = {
   lastDrop: 0,
   writes: 0, // bumps on every change so a slower, older read can't undo it
   pollTimer: null,
-  onWindowEntry: !!history.state?.boardWindow, // whether this history entry was added for a phone's window
+  windowEntryHref: history.state?.boardWindow ? location.href : null, // this history entry's address, if it was added for a phone's window
   notifyHasEntry: false, // whether the open notifications list has its own history entry
   windows: new Map(),
   windowCount: 0,
@@ -437,7 +437,7 @@ function setRenaming(on) {
 }
 
 window.addEventListener("hashchange", () => {
-  state.onWindowEntry = !!history.state?.boardWindow;
+  state.windowEntryHref = history.state?.boardWindow ? location.href : null;
   if (!$("gate").hidden) return;
   showProjectError("project-error", null);
   setRenaming(false);
@@ -970,7 +970,7 @@ function showWindow(w) {
 // phone's Back should close them. Each one gets a history entry for that.
 function addPhoneEntry() {
   history.pushState({ boardWindow: true }, "");
-  state.onWindowEntry = true;
+  state.windowEntryHref = location.href;
 }
 
 // Back closes the window through its history entry, so the two go together.
@@ -985,13 +985,15 @@ function topWindow() {
 }
 
 window.addEventListener("popstate", (event) => {
-  const leftWindowEntry = state.onWindowEntry;
-  state.onWindowEntry = !!event.state?.boardWindow;
+  const leftEntryHref = state.windowEntryHref;
+  state.windowEntryHref = event.state?.boardWindow ? location.href : null;
   if (state.notifyHasEntry) return closeNotifications();
   const top = topWindow();
   if (top?.hasEntry) closeWindow(top);
-  // That entry's window had already closed another way, so this press hasn't done anything yet.
-  else if (leftWindowEntry && $("gate").hidden) history.back();
+  // Same address, nothing closed: that entry's window had already gone another way, so this
+  // press hasn't done anything yet. A new address means it has, as with tapping a link,
+  // which browsers can report here too.
+  else if (leftEntryHref === location.href && $("gate").hidden) history.back();
 });
 
 function createWindow(key, title) {
@@ -1104,7 +1106,8 @@ function buildTaskWindow(w, task) {
         textInput({ maxlength: "200", placeholder: "Add a subtask", "aria-label": "New subtask", "data-input": "title" }),
         textInput({ class: "input is-narrow", maxlength: "60", list: "people-list", placeholder: "Assign", "aria-label": "Assign the new subtask to", "data-input": "assignee" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
-    section("Updates",
+    el("section", { class: "win-section win-updates" },
+      el("h3", { class: "win-heading" }, "Updates"),
       el("form", { class: "win-form", "data-form": "update", novalidate: true },
         textInput({ maxlength: "1000", placeholder: "Add an update", "aria-label": "New update", "data-input": "text" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Post")),
