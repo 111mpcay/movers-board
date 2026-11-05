@@ -598,6 +598,28 @@ body::before {
   -webkit-user-select: none;
 }
 .project-card:hover { box-shadow: var(--shadow-lift); }
+
+/* A project's color. Each one is dark enough for white text, in both themes. */
+.color-navy { --pick: #2a4460; }
+.color-blue { --pick: #1f5f99; }
+.color-teal { --pick: #0f6e6e; }
+.color-green { --pick: #1c7a47; }
+.color-orange { --pick: #b85c00; }
+.color-red { --pick: #b3261e; }
+.color-pink { --pick: #b0307a; }
+.color-purple { --pick: #6a3d9a; }
+.project-card:not(.color-default) { color: #fff; background: var(--pick); border-color: var(--pick); }
+.project-card:not(.color-default) .project-bar { background: rgb(255 255 255 / 0.3); }
+.project-card:not(.color-default) .project-bar i { background: #fff; }
+
+.color-swatches { display: flex; flex: 1 0 100%; flex-wrap: wrap; gap: 9px; }
+.color-swatch { position: relative; width: 36px; height: 36px; cursor: pointer; }
+.color-swatch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.color-swatch i { display: grid; place-items: center; height: 100%; font-style: normal; font-weight: 700; color: #fff; background: var(--pick); border-radius: 50%; }
+.color-swatch.color-default i { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-top: 5px solid var(--orange); }
+.color-swatch input:checked + i { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--ink); }
+.color-swatch input:checked + i::after { content: "✓"; }
+.color-swatch input:focus-visible + i { outline: 2px solid var(--orange); outline-offset: 5px; }
 .project-name { display: block; font-weight: 700; font-size: 1.05rem; line-height: 1.25; overflow-wrap: anywhere; }
 .project-progress { display: flex; align-items: center; gap: 9px; }
 .project-card .project-progress { margin-top: 13px; }

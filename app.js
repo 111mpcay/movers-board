@@ -2,6 +2,7 @@
 
 const STATUS = { todo: "To do", doing: "In progress", done: "Done" };
 const URGENCY = { low: "Low", normal: "Normal", high: "High", critical: "Critical" };
+const PROJECT_COLORS = { default: "Default", navy: "Navy", blue: "Blue", teal: "Teal", green: "Green", orange: "Orange", red: "Red", pink: "Pink", purple: "Purple" };
 const ANSWER = { waiting: "No answer yet", accepted: "Accepted", declined: "Declined" };
 const MEETING_NOTICE = {
   invited: "invited you to a meeting",
@@ -196,7 +197,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     move: (id, position) => rpc("movers_move_task", { p_token: token, p_id: id, p_position: position }),
     addUpdate: (id, text) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
-    saveProject: (id, name) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name }),
+    saveProject: (id, name, color) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name, p_color: color }),
     moveProject: (id, position) => rpc("movers_move_project", { p_token: token, p_id: id, p_position: position }),
     removeProject: (id) => rpc("movers_delete_project", { p_token: token, p_id: id }),
     addLink: (taskId, title, url) => rpc("movers_add_link", { p_token: token, p_task_id: taskId, p_title: title, p_url: url }),
@@ -396,13 +397,13 @@ function projectPercent(id) {
 function renderProjectCards() {
   const projects = [...state.projects].sort((a, b) => a.position - b.position);
   $("no-projects").hidden = projects.length > 0;
-  const cards = projects.map((p) => [p.id, p.name, projectPercent(p.id)]);
+  const cards = projects.map((p) => [p.id, p.name, projectPercent(p.id), p.color || "default"]);
   const list = $("project-cards");
   const signature = JSON.stringify(cards);
   if (list.dataset.sig === signature) return;
   list.dataset.sig = signature;
-  list.replaceChildren(...cards.map(([id, name, percent]) =>
-    el("button", { class: "project-card", type: "button", "data-project": id },
+  list.replaceChildren(...cards.map(([id, name, percent, color]) =>
+    el("button", { class: `project-card color-${color}`, type: "button", "data-project": id },
       el("span", { class: "project-name" }, name),
       el("span", { class: "project-progress" },
         el("span", { class: "project-bar" }, el("i", { style: `width: ${percent}%` })),
@@ -453,12 +454,17 @@ $("project-cards").addEventListener("click", (event) => {
   }
 });
 
+$("new-project-colors").append(...Object.entries(PROJECT_COLORS).map(([color, label]) =>
+  el("label", { class: `color-swatch color-${color}`, title: label },
+    el("input", { type: "radio", name: "project-color", value: color, checked: color === "default", "aria-label": label }),
+    el("i", { "aria-hidden": "true" }))));
+
 function setAddingProject(on) {
   $("new-project-form").hidden = !on;
   $("add-project-btn").hidden = on;
   showProjectError("projects-error", null);
   if (on) $("new-project-name").focus();
-  else $("new-project-name").value = "";
+  else $("new-project-form").reset();
 }
 
 $("add-project-btn").addEventListener("click", () => setAddingProject(true));
@@ -468,7 +474,8 @@ $("new-project-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const name = $("new-project-name").value.trim();
   if (!name) return $("new-project-name").focus();
-  const saved = await write(() => state.store.saveProject(null, name), null);
+  const color = $("new-project-form").querySelector('[name="project-color"]:checked').value;
+  const saved = await write(() => state.store.saveProject(null, name, color), null);
   if (saved.ok) setAddingProject(false);
   else showProjectError("projects-error", "That project didn't save. Check your connection and try again.");
 });
