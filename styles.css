@@ -1023,6 +1023,13 @@ body::before {
   .task-text { flex: 1; }
   .task-glance { display: flex; }
 
+  /* The button sits anywhere along the top bar, so the list can't hang from it. */
+  .notify-panel { position: fixed; inset: 0; width: auto; max-height: none; border: 0; border-radius: 0; box-shadow: none; overscroll-behavior: contain; }
+  .notify-head { padding: max(7px, env(safe-area-inset-top, 0px)) 14px 7px 8px; color: var(--on-navy); background: var(--navy); border-bottom: 0; }
+  .notify-head h2 { flex: 1; min-width: 0; font-size: 1rem; }
+  .notify-head .link-btn { color: var(--on-navy); }
+  .notify-item { padding-block: 12px; }
+
   .win { inset: 0 !important; width: auto !important; height: auto !important; border: 0; border-radius: 0; }
   .win .win-bar { cursor: default; padding-left: 8px; padding-top: max(7px, env(safe-area-inset-top, 0px)); background: var(--navy); }
   .win-back { display: block; }

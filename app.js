@@ -41,6 +41,7 @@ const state = {
   writes: 0, // bumps on every change so a slower, older read can't undo it
   pollTimer: null,
   onWindowEntry: !!history.state?.boardWindow, // whether this history entry was added for a phone's window
+  notifyHasEntry: false, // whether the open notifications list has its own history entry
   windows: new Map(),
   windowCount: 0,
   topZ: 100,
@@ -959,12 +960,17 @@ function showWindow(w) {
   w.root.hidden = false;
   focusWindow(w);
   w.root.focus({ preventScroll: true });
-  // On a phone a window fills the screen like a page, so the phone's Back should close it.
   if (isPhone() && !w.hasEntry) {
-    history.pushState({ boardWindow: true }, "");
+    addPhoneEntry();
     w.hasEntry = true;
-    state.onWindowEntry = true;
   }
+}
+
+// On a phone, windows and the notifications list fill the screen like pages, so the
+// phone's Back should close them. Each one gets a history entry for that.
+function addPhoneEntry() {
+  history.pushState({ boardWindow: true }, "");
+  state.onWindowEntry = true;
 }
 
 // Back closes the window through its history entry, so the two go together.
@@ -981,6 +987,7 @@ function topWindow() {
 window.addEventListener("popstate", (event) => {
   const leftWindowEntry = state.onWindowEntry;
   state.onWindowEntry = !!event.state?.boardWindow;
+  if (state.notifyHasEntry) return closeNotifications();
   const top = topWindow();
   if (top?.hasEntry) closeWindow(top);
   // That entry's window had already closed another way, so this press hasn't done anything yet.
@@ -1974,9 +1981,19 @@ function renderNotifications() {
     : [el("li", { class: "notify-empty" }, "Nothing yet. When someone assigns you a task, invites you to a meeting, or deletes something you created, it shows up here.")]));
 }
 
+function openNotifications() {
+  $("notify-panel").hidden = false;
+  $("notify-btn").setAttribute("aria-expanded", "true");
+  if (isPhone() && !state.notifyHasEntry) {
+    addPhoneEntry();
+    state.notifyHasEntry = true;
+  }
+}
+
 function closeNotifications() {
   $("notify-panel").hidden = true;
   $("notify-btn").setAttribute("aria-expanded", "false");
+  state.notifyHasEntry = false;
 }
 
 function markNotificationsRead(ids) {
@@ -1989,9 +2006,13 @@ function markNotificationsRead(ids) {
 }
 
 $("notify-btn").addEventListener("click", () => {
-  const opening = $("notify-panel").hidden;
-  $("notify-panel").hidden = !opening;
-  $("notify-btn").setAttribute("aria-expanded", String(opening));
+  if ($("notify-panel").hidden) openNotifications();
+  else closeNotifications();
+});
+
+$("notify-back").addEventListener("click", () => {
+  if (state.notifyHasEntry) history.back();
+  else closeNotifications();
 });
 
 $("notify-read-all").addEventListener("click", () => markNotificationsRead(null));
@@ -2000,7 +2021,8 @@ $("notify-list").addEventListener("click", (event) => {
   const item = event.target.closest("[data-notification]");
   if (!item) return;
   markNotificationsRead([item.dataset.notification]);
-  closeNotifications();
+  // On a phone the list is its own page, so leave it up when there's nothing to go to.
+  if (!isPhone() || findTask(item.dataset.task) || findMeeting(item.dataset.openMeeting)) closeNotifications();
   openTask(item.dataset.task);
   openMeeting(item.dataset.openMeeting);
 });
