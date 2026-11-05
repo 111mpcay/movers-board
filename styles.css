@@ -626,6 +626,7 @@ body::before {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  overflow: clip; /* unlike hidden, focusing something can't scroll the frame and lose the title bar */
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 9px;
@@ -683,6 +684,11 @@ body::before {
   border-bottom: 2px solid var(--orange);
 }
 .win-section { display: flex; flex-direction: column; }
+.win-fold > summary { cursor: pointer; }
+.win-fold:not([open]) > summary { margin-bottom: 0; }
+.win-count { margin-left: 6px; font-weight: 600; color: var(--muted); }
+.win-history { margin-top: 10px; }
+.win-history > summary { width: fit-content; font-size: 0.84rem; font-weight: 600; color: var(--muted); cursor: pointer; }
 .win-list { list-style: none; }
 .win-item {
   display: flex;
@@ -700,8 +706,8 @@ body::before {
 .win-form .input { flex: 1 1 130px; min-width: 0; min-height: 36px; padding: 6px 9px; }
 .win-form .btn { min-height: 36px; padding: 5px 13px; }
 .win-form .is-narrow { flex: 0 1 112px; }
-.win-upload { cursor: pointer; display: inline-flex; align-items: center; }
-.win-upload input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.win-upload { position: relative; cursor: pointer; display: inline-flex; align-items: center; }
+.win-upload input { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; }
 .win-upload:focus-within { outline: 2px solid var(--orange); outline-offset: 2px; }
 .win-uploading { font-style: italic; color: var(--muted); }
 .win-remove { padding: 1px 6px; font-size: 0.8rem; color: var(--danger); background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }

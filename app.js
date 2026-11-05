@@ -807,7 +807,8 @@ function buildTaskWindow(w, task) {
       el("output", { class: "progress-label" }, "0%"),
       el("input", { class: "progress-range", type: "range", min: "0", max: "100", step: "5", "data-field": "progress" }))),
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
-    !isSubtask && section("Subtasks",
+    !isSubtask && el("details", { class: "win-fold" },
+      el("summary", { class: "win-heading" }, "Subtasks", el("span", { class: "win-count", "data-count": "subtasks" })),
       el("ul", { class: "win-list", "data-list": "subtasks" }),
       el("form", { class: "win-form", "data-form": "subtask", novalidate: true },
         textInput({ maxlength: "200", placeholder: "Add a subtask", "aria-label": "New subtask", "data-input": "title" }),
@@ -817,7 +818,10 @@ function buildTaskWindow(w, task) {
       el("form", { class: "win-form", "data-form": "update", novalidate: true },
         textInput({ maxlength: "1000", placeholder: "Add an update", "aria-label": "New update", "data-input": "text" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Post")),
-      el("ul", { class: "activity-list", "data-list": "updates" })),
+      el("ul", { class: "activity-list", "data-list": "updates" }),
+      el("details", { class: "win-history" },
+        el("summary", {}, "History", el("span", { class: "win-count", "data-count": "history" })),
+        el("ul", { class: "activity-list", "data-list": "history" }))),
     section("Files",
       el("ul", { class: "win-list", "data-list": "files" }),
       el("div", { class: "win-form" },
@@ -860,6 +864,11 @@ function renderList(w, name, contents, build) {
   list.replaceChildren(...build());
 }
 
+function setCount(w, name, text) {
+  const count = w.body.querySelector(`[data-count="${name}"]`);
+  if (count) count.textContent = text;
+}
+
 function removeButton(attachment) {
   return el("button", { class: "win-remove", type: "button", "data-remove": attachment.id, "data-kind": attachment.kind, "aria-label": `Remove ${attachment.title}` }, "Remove");
 }
@@ -884,10 +893,11 @@ function renderTaskWindow(w) {
   const noteEl = w.body.querySelector("[data-deadline-note]");
   noteEl.textContent = note?.text || "";
   noteEl.className = `due-note${note ? ` due-${note.tone}` : ""}`;
-  const parentLink = w.body.querySelector("[data-open-task]");
+  const parentLink = w.body.querySelector(".win-parent [data-open-task]");
   if (parentLink) parentLink.textContent = findTask(task.parent_id)?.title || "";
 
   const subtasks = subtasksOf(task.id);
+  setCount(w, "subtasks", subtasks.length ? `${subtasks.filter((s) => s.status === "done").length}/${subtasks.length}` : "");
   renderList(w, "subtasks", subtasks.map((s) => [s.id, s.title, s.assignee, s.status, deadlineNote(s)?.text]), () =>
     subtasks.length ? subtasks.map((s) => {
       const due = deadlineNote(s);
@@ -899,14 +909,19 @@ function renderTaskWindow(w) {
         due && el("span", { class: `due-note due-${due.tone}` }, due.text));
     }) : [el("li", { class: "win-empty" }, "No subtasks yet.")]);
 
-  const updates = [...(task.updates || [])].reverse();
-  renderList(w, "updates", updates.map((u) => [u.at, u.by, u.text, timeAgo(u.at)]), () => updates.map((entry) => {
-    const time = el("span", { class: "activity-time" }, timeAgo(entry.at));
-    if (entry.kind === "note") {
-      return el("li", {}, el("strong", {}, entry.by), " ", time, el("span", { class: "activity-note" }, entry.text));
-    }
-    return el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, time);
-  }));
+  // Notes people wrote stay in view. The automatic record of changes folds away under History.
+  const entries = [...(task.updates || [])].reverse();
+  const notes = entries.filter((entry) => entry.kind === "note");
+  const history = entries.filter((entry) => entry.kind !== "note");
+  const entrySignature = (entry) => [entry.at, entry.by, entry.text, timeAgo(entry.at)];
+  renderList(w, "updates", notes.map(entrySignature), () =>
+    notes.length ? notes.map((entry) => el("li", {},
+      el("strong", {}, entry.by), " ",
+      el("span", { class: "activity-time" }, timeAgo(entry.at)),
+      el("span", { class: "activity-note" }, entry.text))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
+  setCount(w, "history", `(${history.length})`);
+  renderList(w, "history", history.map(entrySignature), () => history.map((entry) =>
+    el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, el("span", { class: "activity-time" }, timeAgo(entry.at)))));
 
   const attachments = task.attachments || [];
   const files = attachments.filter((a) => a.kind === "file");
