@@ -16,6 +16,9 @@ const NAME_KEY = "board.lastName";
 
 const state = {
   store: null,
+  projects: [],
+  projectId: null, // the project whose page is showing; null on the cards screen
+  leavingProject: null, // a project this person is deleting, so its page goes quietly
   tasks: [],
   notifications: [],
   people: [],
@@ -163,6 +166,9 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     move: (id, position) => rpc("movers_move_task", { p_token: token, p_id: id, p_position: position }),
     addUpdate: (id, text) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
+    saveProject: (id, name) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name }),
+    moveProject: (id, position) => rpc("movers_move_project", { p_token: token, p_id: id, p_position: position }),
+    removeProject: (id) => rpc("movers_delete_project", { p_token: token, p_id: id }),
     addLink: (taskId, title, url) => rpc("movers_add_link", { p_token: token, p_task_id: taskId, p_title: title, p_url: url }),
     removeAttachment: (id) => rpc("movers_remove_attachment", { p_token: token, p_id: id }),
     markRead: (ids) => rpc("movers_mark_notifications_read", { p_token: token, p_ids: ids }),
@@ -274,6 +280,8 @@ function showGate(message) {
   writeStorage("sessionStorage", SESSION_KEY, null);
   closeAllWindows();
   closeNotifications();
+  state.projects = [];
+  state.projectId = null;
   state.tasks = [];
   state.notifications = [];
   state.people = [];
@@ -300,7 +308,160 @@ async function startBoard(token, name) {
   startPolling();
 }
 
-$("leave-btn").addEventListener("click", () => showGate());
+$("leave-btn").addEventListener("click", () => {
+  history.replaceState(null, "", location.pathname + location.search);
+  showGate();
+});
+
+// ---------- Projects ----------
+
+function routeProjectId() {
+  return location.hash.match(/^#project=(.+)$/)?.[1] || null;
+}
+
+// The address decides which page shows, so Back and refresh both work.
+function syncRoute() {
+  const id = routeProjectId();
+  const exists = state.projects.some((p) => p.id === id);
+  if (id && !exists) {
+    history.replaceState(null, "", location.pathname + location.search);
+    if (id !== state.leavingProject) showSyncNote("That project is no longer on the board.");
+  }
+  state.projectId = exists ? id : null;
+  $("projects-view").hidden = !!state.projectId;
+  $("project-view").hidden = !state.projectId;
+  $("add-btn").hidden = !state.projectId;
+}
+
+function projectPercent(id) {
+  const tasks = state.tasks.filter((t) => t.project_id === id && !t.parent_id);
+  if (!tasks.length) return 0;
+  return Math.round(tasks.reduce((sum, t) => sum + t.progress, 0) / tasks.length);
+}
+
+function renderProjectCards() {
+  const projects = [...state.projects].sort((a, b) => a.position - b.position);
+  $("no-projects").hidden = projects.length > 0;
+  const cards = projects.map((p) => [p.id, p.name, projectPercent(p.id)]);
+  const list = $("project-cards");
+  const signature = JSON.stringify(cards);
+  if (list.dataset.sig === signature) return;
+  list.dataset.sig = signature;
+  list.replaceChildren(...cards.map(([id, name, percent]) =>
+    el("button", { class: "project-card", type: "button", "data-project": id },
+      el("span", { class: "project-name" }, name),
+      el("span", { class: "project-progress" },
+        el("span", { class: "project-bar" }, el("i", { style: `width: ${percent}%` })),
+        el("span", { class: "project-percent" }, `${percent}%`)))));
+}
+
+function renderProjectPage() {
+  const project = state.projects.find((p) => p.id === state.projectId);
+  document.title = project ? `${project.name} · Movers Board` : "Movers Board";
+  if (!project) return;
+  const percent = projectPercent(project.id);
+  $("project-title").textContent = project.name;
+  $("project-bar-fill").style.width = `${percent}%`;
+  $("project-percent").textContent = `${percent}%`;
+}
+
+function showProjectError(id, message) {
+  $(id).textContent = message || "";
+  $(id).hidden = !message;
+}
+
+function setRenaming(on) {
+  $("rename-project-form").hidden = !on;
+  $("project-title").hidden = on;
+  $("rename-project-btn").hidden = on;
+  if (on) {
+    const input = $("rename-project-name");
+    input.value = state.projects.find((p) => p.id === state.projectId)?.name || "";
+    input.focus();
+    input.select();
+  }
+}
+
+window.addEventListener("hashchange", () => {
+  if (!$("gate").hidden) return;
+  showProjectError("project-error", null);
+  setRenaming(false);
+  renderBoard();
+  window.scrollTo(0, 0);
+});
+
+$("project-cards").addEventListener("click", (event) => {
+  const card = event.target.closest("[data-project]");
+  // A drag ends with a click on the same card, which shouldn't open the project.
+  if (card && !state.dragging && Date.now() - state.lastDrop > 300) {
+    location.hash = `project=${card.dataset.project}`;
+  }
+});
+
+function setAddingProject(on) {
+  $("new-project-form").hidden = !on;
+  $("add-project-btn").hidden = on;
+  showProjectError("projects-error", null);
+  if (on) $("new-project-name").focus();
+  else $("new-project-name").value = "";
+}
+
+$("add-project-btn").addEventListener("click", () => setAddingProject(true));
+$("new-project-cancel").addEventListener("click", () => setAddingProject(false));
+
+$("new-project-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = $("new-project-name").value.trim();
+  if (!name) return $("new-project-name").focus();
+  const saved = await write(() => state.store.saveProject(null, name), null);
+  if (saved.ok) setAddingProject(false);
+  else showProjectError("projects-error", "That project didn't save. Check your connection and try again.");
+});
+
+$("rename-project-btn").addEventListener("click", () => setRenaming(true));
+$("rename-project-cancel").addEventListener("click", () => setRenaming(false));
+
+$("rename-project-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const name = $("rename-project-name").value.trim();
+  if (!name) return $("rename-project-name").focus();
+  const id = state.projectId;
+  const saved = await write(() => state.store.saveProject(id, name), null);
+  if (saved.ok) {
+    showProjectError("project-error", null);
+    setRenaming(false);
+  } else {
+    showProjectError("project-error", "That name didn't save. Check your connection and try again.");
+  }
+});
+
+$("delete-project-btn").addEventListener("click", async () => {
+  const button = $("delete-project-btn");
+  const id = state.projectId;
+  const count = state.tasks.filter((t) => t.project_id === id && !t.parent_id).length;
+  const warning = count === 0 ? "Delete this empty project?"
+    : `Delete it and its ${count === 1 ? "1 task" : `${count} tasks`} for everyone?`;
+  if (!armButton(button, warning, "Delete project")) return;
+  button.disabled = true;
+  const going = state.tasks.filter((t) => t.project_id === id).map((t) => state.windows.get(t.id)).filter(Boolean);
+  going.forEach((w) => { w.deleting = true; });
+  state.leavingProject = id;
+  const result = await write(() => state.store.removeProject(id), null);
+  button.disabled = false;
+  button.classList.remove("armed");
+  button.textContent = "Delete project";
+  if (result.ok) {
+    going.forEach(closeWindow);
+    state.projects = state.projects.filter((p) => p.id !== id);
+    state.tasks = state.tasks.filter((t) => t.project_id !== id);
+    location.hash = "";
+    state.store.cleanFiles().catch(() => { /* retried by the next removal */ });
+  } else {
+    state.leavingProject = null;
+    going.forEach((w) => { w.deleting = false; });
+    showProjectError("project-error", "That project wasn't deleted. Check your connection and try again.");
+  }
+});
 
 // ---------- The task list ----------
 
@@ -377,7 +538,7 @@ function renderRow(task) {
 }
 
 function renderSummary() {
-  const open = state.tasks.filter((t) => !t.parent_id && t.status !== "done");
+  const open = state.tasks.filter((t) => !t.parent_id && t.status !== "done" && (!state.projectId || t.project_id === state.projectId));
   const overdue = open.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
   const today = open.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
   const parts = [el("span", {}, `${open.length} open`)];
@@ -402,7 +563,7 @@ function renderRows() {
   const list = $("task-rows");
   const focused = document.activeElement;
   const activeRow = focused?.closest?.(".task-row") || null;
-  const tasks = state.tasks.filter((t) => !t.parent_id).sort((a, b) => a.position - b.position);
+  const tasks = state.tasks.filter((t) => !t.parent_id && t.project_id === state.projectId).sort((a, b) => a.position - b.position);
   const existing = new Map([...list.children].map((row) => [row.dataset.id, row]));
   const wanted = new Set(tasks.map((t) => t.id));
   existing.forEach((row, id) => { if (!wanted.has(id)) row.remove(); });
@@ -425,6 +586,9 @@ function renderRows() {
 }
 
 function renderBoard() {
+  syncRoute();
+  renderProjectCards();
+  renderProjectPage();
   renderRows();
   renderSummary();
   renderPeople();
@@ -504,9 +668,7 @@ rows.addEventListener("focusout", () => {
 
 function setUpDragging() {
   if (!window.Sortable) return;
-  new window.Sortable(rows, {
-    draggable: ".task-row",
-    handle: ".task-cell",
+  const shared = {
     animation: 140,
     forceFallback: true,
     fallbackOnBody: true,
@@ -521,14 +683,27 @@ function setUpDragging() {
       state.dragging = true;
       document.body.classList.add("is-dragging");
     },
-    onEnd: handleDrop,
-  });
+  };
+  new window.Sortable(rows, { ...shared, draggable: ".task-row", handle: ".task-cell", onEnd: handleDrop });
+  new window.Sortable($("project-cards"), { ...shared, draggable: ".project-card", onEnd: handleProjectDrop });
 }
 
-async function handleDrop(event) {
+function endDrag() {
   state.dragging = false;
   state.lastDrop = Date.now();
   document.body.classList.remove("is-dragging");
+}
+
+// A position halfway between the new neighbours, so nothing else has to be renumbered.
+function positionBetween(before, after) {
+  if (before && after) return (before.position + after.position) / 2;
+  if (before) return before.position + 1000;
+  if (after) return after.position - 1000;
+  return 1000;
+}
+
+async function handleDrop(event) {
+  endDrag();
   if (event.oldIndex === event.newIndex) return;
 
   const id = event.item.dataset.id;
@@ -537,15 +712,27 @@ async function handleDrop(event) {
 
   const order = [...rows.children].map((row) => row.dataset.id);
   const index = order.indexOf(id);
-  const before = findTask(order[index - 1]);
-  const after = findTask(order[index + 1]);
-  let position = 1000;
-  if (before && after) position = (before.position + after.position) / 2;
-  else if (before) position = before.position + 1000;
-  else if (after) position = after.position - 1000;
+  const position = positionBetween(findTask(order[index - 1]), findTask(order[index + 1]));
 
   task.position = position;
   await write(() => state.store.move(id, position), "That move didn't save, so the row has gone back. Check your connection and try again.");
+}
+
+async function handleProjectDrop(event) {
+  endDrag();
+  if (event.oldIndex === event.newIndex) return;
+
+  const id = event.item.dataset.project;
+  const project = state.projects.find((p) => p.id === id);
+  if (!project) return;
+
+  const order = [...$("project-cards").children].map((card) => card.dataset.project);
+  const index = order.indexOf(id);
+  const findProject = (key) => state.projects.find((p) => p.id === key);
+  const position = positionBetween(findProject(order[index - 1]), findProject(order[index + 1]));
+
+  project.position = position;
+  await write(() => state.store.moveProject(id, position), "That move didn't save, so the card has gone back. Check your connection and try again.");
 }
 
 // Runs a change, then re-reads the list. Failure shows a note instead of hiding the problem.
@@ -579,7 +766,7 @@ $("quick-add").addEventListener("submit", async (event) => {
   const title = $("quick-title").value.trim();
   if (!title) return $("quick-title").focus();
   $("quick-submit").disabled = true;
-  const added = await write(() => state.store.save(null, { title }), "That task didn't save. Check your connection and try again.");
+  const added = await write(() => state.store.save(null, { title, project_id: state.projectId }), "That task didn't save. Check your connection and try again.");
   $("quick-submit").disabled = false;
   if (added.ok) $("quick-title").value = "";
   $("quick-title").focus();
@@ -598,6 +785,7 @@ async function refresh() {
     if (startedAt === state.writes && !state.dragging) {
       if (result.changed) {
         state.version = result.version;
+        state.projects = result.projects || [];
         state.tasks = result.tasks;
         state.notifications = result.notifications || [];
         state.people = result.people || [];
@@ -803,6 +991,7 @@ function buildTaskWindow(w, task) {
   const parts = [
     isSubtask && el("p", { class: "win-parent" }, "Part of ", el("button", { class: "link-btn", type: "button", "data-open-task": task.parent_id }, "")),
     ...taskFields(),
+    !isSubtask && field("Project", el("select", { class: "input", "data-field": "project_id" })),
     field("Progress", el("div", { class: "progress-wrap progress-wrap-large" },
       el("output", { class: "progress-label" }, "0%"),
       el("input", { class: "progress-range", type: "range", min: "0", max: "100", step: "5", "data-field": "progress" }))),
@@ -880,7 +1069,14 @@ function renderTaskWindow(w) {
   w.root.setAttribute("aria-label", title);
   if (w.chip) w.chip.textContent = title;
 
-  for (const name of ["title", "details", "assignee", "deadline", "urgency", "status"]) {
+  const projectSelect = w.body.querySelector('[data-field="project_id"]');
+  const projectOptions = JSON.stringify(state.projects.map((p) => [p.id, p.name]));
+  if (projectSelect && projectSelect.dataset.sig !== projectOptions && projectSelect !== document.activeElement) {
+    projectSelect.dataset.sig = projectOptions;
+    projectSelect.replaceChildren(...state.projects.map((p) => el("option", { value: p.id }, p.name)));
+    projectSelect.value = task.project_id;
+  }
+  for (const name of ["title", "details", "assignee", "deadline", "urgency", "status", "project_id"]) {
     setFieldValue(w, name, task[name]);
   }
   const range = w.body.querySelector('[data-field="progress"]');
@@ -1150,6 +1346,7 @@ async function submitNewTask(w, event) {
   }
   const fields = {
     title,
+    project_id: state.projectId,
     details: value("details"),
     assignee: value("assignee"),
     deadline: value("deadline"),
@@ -1184,7 +1381,7 @@ function renderNotifications() {
     ? state.notifications.map((n) => el("li", {},
       el("button", { class: `notify-item${n.read_at ? "" : " is-unread"}`, type: "button", "data-notification": n.id, "data-task": n.task_id },
         `${n.by_name} assigned you a ${n.kind}`,
-        el("span", { class: "notify-task" }, n.parent_title ? `${n.title} · in ${n.parent_title}` : n.title),
+        el("span", { class: "notify-task" }, [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name].filter(Boolean).join(" · ")),
         el("span", { class: "notify-time" }, timeAgo(n.created_at)))))
     : [el("li", { class: "notify-empty" }, "Nothing yet. When someone assigns you a task or subtask, it shows up here.")]));
 }

@@ -72,7 +72,42 @@
     <p id="demo-note" class="note note-demo" hidden>Demo mode: the example tasks and your changes are saved only in this browser.</p>
     <p id="sync-note" class="note note-warn" role="status" hidden></p>
 
-    <main class="sheet-wrap">
+    <!-- First screen: one card per project -->
+    <main id="projects-view" class="sheet-wrap" hidden>
+      <div class="page-head">
+        <h1 class="page-title">Projects</h1>
+        <span class="spacer"></span>
+        <button id="add-project-btn" class="btn btn-primary" type="button">Add project</button>
+      </div>
+      <form id="new-project-form" class="inline-form" novalidate hidden>
+        <input id="new-project-name" class="input" type="text" maxlength="120" placeholder="Project name" aria-label="Project name" autocomplete="off">
+        <button class="btn btn-primary" type="submit">Create</button>
+        <button id="new-project-cancel" class="btn btn-quiet" type="button">Cancel</button>
+      </form>
+      <p id="projects-error" class="form-error" role="alert" hidden></p>
+      <div id="project-cards" class="project-cards"></div>
+      <p id="no-projects" class="win-empty" hidden>No projects yet. Add the first one to get started.</p>
+    </main>
+
+    <!-- A project's own page: its task list -->
+    <main id="project-view" class="sheet-wrap" hidden>
+      <a id="all-projects" class="link-btn back-link" href="#">‹ All projects</a>
+      <div class="page-head">
+        <h1 id="project-title" class="page-title"></h1>
+        <form id="rename-project-form" class="inline-form" novalidate hidden>
+          <input id="rename-project-name" class="input" type="text" maxlength="120" aria-label="Project name" autocomplete="off">
+          <button class="btn btn-primary" type="submit">Save</button>
+          <button id="rename-project-cancel" class="btn btn-quiet" type="button">Cancel</button>
+        </form>
+        <div class="project-progress">
+          <div class="project-bar"><i id="project-bar-fill"></i></div>
+          <span id="project-percent" class="project-percent"></span>
+        </div>
+        <span class="spacer"></span>
+        <button id="rename-project-btn" class="btn btn-quiet btn-small" type="button">Rename</button>
+        <button id="delete-project-btn" class="btn btn-danger btn-small" type="button">Delete project</button>
+      </div>
+      <p id="project-error" class="form-error" role="alert" hidden></p>
       <div class="sheet" role="table" aria-label="Task list">
         <div class="sheet-head" role="row">
           <div class="head-title" role="columnheader">

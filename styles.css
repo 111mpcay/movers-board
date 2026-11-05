@@ -553,6 +553,38 @@ body::before {
   border-left: 1px solid var(--line);
 }
 
+/* Project cards and a project's page */
+.page-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 14px; }
+.page-title { font: 700 1.5rem/1.2 var(--font-display); letter-spacing: 0.01em; overflow-wrap: anywhere; }
+.back-link { display: inline-block; margin-bottom: 8px; font-size: 0.9rem; }
+.inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+.inline-form .input { flex: 1 1 220px; width: auto; min-width: 0; max-width: 420px; }
+.page-head .inline-form { margin-bottom: 0; }
+#projects-error, #project-error { margin-bottom: 14px; }
+.project-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+.project-card {
+  display: block;
+  width: 100%;
+  padding: 14px 15px;
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top: 4px solid var(--orange);
+  border-radius: 7px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.project-card:hover { box-shadow: var(--shadow-lift); }
+.project-name { display: block; font-weight: 700; font-size: 1.05rem; line-height: 1.25; overflow-wrap: anywhere; }
+.project-progress { display: flex; align-items: center; gap: 9px; }
+.project-card .project-progress { margin-top: 13px; }
+#project-view .project-progress { flex: 0 1 220px; min-width: 130px; }
+.project-bar { flex: 1; min-width: 0; height: 12px; background: var(--track); }
+.project-bar i { display: block; height: 100%; background: var(--green); }
+.project-percent { flex: none; font-size: 0.86rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 /* Notifications. The top bar has to rise above open windows while the list is showing. */
 .topbar:has(.notify-panel:not([hidden])) { z-index: 6000; }
 .notify { position: relative; }
