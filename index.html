@@ -49,6 +49,10 @@
       <div class="topbar-inner">
         <div class="brand">
           <span class="wordmark wordmark-small">Movers Board</span>
+          <nav class="topnav" aria-label="Sections">
+            <a id="nav-projects" class="topnav-link" href="#">Projects</a>
+            <a id="nav-calendar" class="topnav-link" href="#calendar">Calendar</a>
+          </nav>
           <span id="summary" class="summary"></span>
         </div>
         <div class="topbar-actions">
@@ -65,6 +69,7 @@
           </div>
           <button id="leave-btn" class="btn btn-quiet" type="button">Leave</button>
           <button id="add-btn" class="btn btn-primary" type="button">Add task</button>
+          <button id="set-meeting-btn" class="btn btn-primary" type="button" hidden>Set meeting</button>
         </div>
       </div>
     </header>
@@ -137,12 +142,34 @@
         </form>
       </div>
     </main>
+
+    <!-- The calendar: one row per person, one column per day -->
+    <main id="calendar-view" class="sheet-wrap" hidden>
+      <div id="meeting-waiting" class="week-waiting" role="status" hidden>
+        <span id="meeting-waiting-text"></span>
+        <button id="meeting-waiting-open" class="btn btn-quiet btn-small" type="button">Open</button>
+      </div>
+      <div class="page-head">
+        <button id="week-prev" class="btn btn-quiet btn-small" type="button" aria-label="Previous week">‹</button>
+        <h1 id="week-title" class="page-title"></h1>
+        <button id="week-next" class="btn btn-quiet btn-small" type="button" aria-label="Next week">›</button>
+        <button id="week-today" class="btn btn-quiet btn-small" type="button">Today</button>
+      </div>
+      <div class="week-scroll">
+        <div id="week-grid" class="week-grid" role="table" aria-label="Meetings this week, by person"></div>
+      </div>
+      <div class="week-legend">
+        <span><span class="week-chip week-chip-sample">Confirmed</span> Everyone can see it</span>
+        <span><span class="week-chip week-chip-sample is-waiting">Waiting</span> Only the people in it can see it</span>
+        <span>Click an empty day on someone's row to set a meeting with them.</span>
+      </div>
+    </main>
     <datalist id="people-list"></datalist>
   </div>
 
   <!-- Floating task windows, and the tray that holds minimized ones -->
   <div id="windows"></div>
-  <div id="window-tray" class="window-tray" aria-label="Minimized tasks"></div>
+  <div id="window-tray" class="window-tray" aria-label="Minimized windows"></div>
 
   <script src="config.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>

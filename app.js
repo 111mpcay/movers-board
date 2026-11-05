@@ -2,6 +2,15 @@
 
 const STATUS = { todo: "To do", doing: "In progress", done: "Done" };
 const URGENCY = { low: "Low", normal: "Normal", high: "High", critical: "Critical" };
+const ANSWER = { waiting: "No answer yet", accepted: "Accepted", declined: "Declined" };
+const MEETING_NOTICE = {
+  invited: "invited you to a meeting",
+  accepted: "accepted your meeting",
+  declined: "declined your meeting",
+  changed: "changed a meeting",
+  removed: "removed you from a meeting",
+  cancelled: "cancelled a meeting",
+};
 const POLL_MS = 5000;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
 const MIN_WINDOW = { width: 340, height: 260 };
@@ -20,6 +29,8 @@ const state = {
   projectId: null, // the project whose page is showing; null on the cards screen
   leavingProject: null, // a project this person is deleting, so its page goes quietly
   tasks: [],
+  meetings: [],
+  weekStart: startOfWeek(new Date()), // the Monday of the week the calendar is showing
   notifications: [],
   deleted: [], // what was deleted lately, so a page that had it open can say who did it
   people: [],
@@ -79,6 +90,22 @@ function timeAgo(iso) {
   if (days < 30) return `${days} d ago`;
   return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+function startOfWeek(date) {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  return start;
+}
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+const pad2 = (n) => String(n).padStart(2, "0");
+const dayKey = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+const clockValue = (date) => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+const formatDay = (date) => date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+const formatTime = (date) => date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+const personKey = (name) => String(name || "").trim().toLowerCase();
 function formatSize(bytes) {
   if (bytes == null) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -173,6 +200,11 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     addLink: (taskId, title, url) => rpc("movers_add_link", { p_token: token, p_task_id: taskId, p_title: title, p_url: url }),
     removeAttachment: (id) => rpc("movers_remove_attachment", { p_token: token, p_id: id }),
     markRead: (ids) => rpc("movers_mark_notifications_read", { p_token: token, p_ids: ids }),
+    saveMeeting: (id, fields) => rpc("movers_save_meeting", { p_token: token, p_id: id, p_fields: fields }),
+    answerMeeting: (id, answer) => rpc("movers_answer_meeting", { p_token: token, p_id: id, p_answer: answer }),
+    addMeetingPerson: (id, name) => rpc("movers_add_meeting_person", { p_token: token, p_id: id, p_name: name }),
+    removeMeetingPerson: (id, name) => rpc("movers_remove_meeting_person", { p_token: token, p_id: id, p_name: name }),
+    cancelMeeting: (id) => rpc("movers_cancel_meeting", { p_token: token, p_id: id }),
     async uploadFile(taskId, file) {
       const { path, upload_url: uploadUrl } = await fileService("upload", { task_id: taskId });
       const res = await fetch(uploadUrl, {
@@ -285,12 +317,17 @@ function showGate(message) {
   state.projects = [];
   state.projectId = null;
   state.tasks = [];
+  state.meetings = [];
+  state.weekStart = startOfWeek(new Date());
   state.notifications = [];
   state.deleted = [];
   state.people = [];
   state.version = -1;
   state.store.setToken(null);
   $("task-rows").replaceChildren();
+  $("week-grid").replaceChildren();
+  delete $("week-grid").dataset.sig;
+  delete $("week-grid").dataset.week;
   $("board-view").hidden = true;
   $("gate").hidden = false;
   $("name-input").value = readStorage("localStorage", NAME_KEY) || "";
@@ -322,9 +359,11 @@ function routeProjectId() {
   return location.hash.match(/^#project=(.+)$/)?.[1] || null;
 }
 
+const onCalendar = () => location.hash === "#calendar";
+
 function deletedNote(id, fallback) {
   const gone = state.deleted.find((d) => d.item_id === id);
-  return gone ? `${gone.by_name} deleted the ${gone.kind} "${gone.title}".` : fallback;
+  return gone ? `${gone.by_name} ${gone.kind === "meeting" ? "cancelled" : "deleted"} the ${gone.kind} "${gone.title}".` : fallback;
 }
 
 // The address decides which page shows, so Back and refresh both work.
@@ -336,9 +375,14 @@ function syncRoute() {
     if (id !== state.leavingProject) showSyncNote(deletedNote(id, "That project is no longer on the board."));
   }
   state.projectId = exists ? id : null;
-  $("projects-view").hidden = !!state.projectId;
+  const calendar = onCalendar();
+  $("calendar-view").hidden = !calendar;
+  $("projects-view").hidden = calendar || !!state.projectId;
   $("project-view").hidden = !state.projectId;
   $("add-btn").hidden = !state.projectId;
+  $("set-meeting-btn").hidden = !calendar;
+  $("nav-projects").classList.toggle("is-current", !calendar);
+  $("nav-calendar").classList.toggle("is-current", calendar);
 }
 
 function projectPercent(id) {
@@ -365,7 +409,7 @@ function renderProjectCards() {
 
 function renderProjectPage() {
   const project = state.projects.find((p) => p.id === state.projectId);
-  document.title = project ? `${project.name} · Movers Board` : "Movers Board";
+  document.title = project ? `${project.name} · Movers Board` : onCalendar() ? "Calendar · Movers Board" : "Movers Board";
   if (!project) return;
   const percent = projectPercent(project.id);
   $("project-title").textContent = project.name;
@@ -562,6 +606,10 @@ function renderPeople() {
       if (name) names.add(name);
     }
   }
+  for (const meeting of state.meetings) {
+    names.add(meeting.created_by);
+    meeting.people.forEach((person) => names.add(person.name));
+  }
   $("people-list").replaceChildren(...[...names].sort().map((name) => el("option", { value: name })));
 }
 
@@ -601,6 +649,7 @@ function renderBoard() {
   renderRows();
   renderSummary();
   renderPeople();
+  renderCalendar();
   renderNotifications();
 }
 
@@ -795,6 +844,7 @@ async function refresh() {
         state.version = result.version;
         state.projects = result.projects || [];
         state.tasks = result.tasks;
+        state.meetings = result.meetings || [];
         state.notifications = result.notifications || [];
         state.deleted = result.deleted || [];
         state.people = result.people || [];
@@ -1155,6 +1205,15 @@ function renderTaskWindow(w) {
 
 function renderWindows() {
   for (const w of [...state.windows.values()]) {
+    if (w.meetingId) {
+      if (!findMeeting(w.meetingId)) {
+        closeWindow(w);
+        if (!w.deleting) showSyncNote(deletedNote(w.meetingId, "A meeting you had open is no longer on the calendar."));
+      } else if (!w.isForm) {
+        renderMeetingWindow(w);
+      }
+      continue;
+    }
     if (!w.taskId) continue;
     if (findTask(w.taskId)) renderTaskWindow(w);
     else {
@@ -1429,10 +1488,432 @@ async function submitNewTask(w, event) {
 
 $("add-btn").addEventListener("click", openNewTask);
 
+// ---------- The calendar ----------
+
+const findMeeting = (id) => state.meetings.find((m) => m.id === id);
+const isOrganizer = (m) => personKey(m.created_by) === personKey(state.name);
+const myInvite = (m) => m.people.find((p) => p.name_key === personKey(state.name));
+const isConfirmed = (m) => !m.people.length || m.people.some((p) => p.answer === "accepted");
+const byStart = (a, b) => new Date(a.starts_at) - new Date(b.starts_at);
+
+// Everyone the board knows about, with this person first.
+function calendarPeople() {
+  const names = new Map();
+  const add = (name) => {
+    const key = personKey(name);
+    if (key && !names.has(key)) names.set(key, name.trim());
+  };
+  add(state.name);
+  state.people.forEach(add);
+  for (const m of state.meetings) {
+    add(m.created_by);
+    m.people.forEach((p) => add(p.name));
+  }
+  const me = personKey(state.name);
+  return [...names].map(([key, name]) => ({ key, name }))
+    .sort((a, b) => (b.key === me) - (a.key === me) || a.name.localeCompare(b.name));
+}
+
+// How a meeting shows on one person's row: solid once they're going, dashed while it's
+// still unsettled for them, and only to the people in it. Null keeps it off their row.
+function chipStyle(m, key) {
+  if (personKey(m.created_by) === key) return isConfirmed(m) ? "ok" : "wait";
+  const person = m.people.find((p) => p.name_key === key);
+  if (!person || person.answer === "declined") return null;
+  if (person.answer === "accepted") return "ok";
+  return isOrganizer(m) || myInvite(m) ? "wait" : null;
+}
+
+function renderWaitingBanner() {
+  const now = Date.now();
+  const waiting = state.meetings.filter((m) => myInvite(m)?.answer === "waiting" && new Date(m.ends_at).getTime() > now).sort(byStart);
+  $("meeting-waiting").hidden = !waiting.length;
+  if (!waiting.length) return;
+  const next = waiting[0];
+  const what = `${next.title}, ${formatDay(new Date(next.starts_at))}`;
+  $("meeting-waiting-text").textContent = waiting.length === 1
+    ? `1 meeting is waiting for your answer: ${what}`
+    : `${waiting.length} meetings are waiting for your answer. Next: ${what}`;
+  $("meeting-waiting-open").dataset.meeting = next.id;
+}
+
+function renderCalendar() {
+  if ($("calendar-view").hidden) return;
+  renderWaitingBanner();
+
+  const days = Array.from({ length: 7 }, (_, i) => addDays(state.weekStart, i));
+  const short = { month: "short", day: "numeric" };
+  const sameYear = days[0].getFullYear() === days[6].getFullYear();
+  $("week-title").textContent = `${days[0].toLocaleDateString(undefined, sameYear ? short : { ...short, year: "numeric" })} to ${days[6].toLocaleDateString(undefined, { ...short, year: "numeric" })}`;
+
+  const me = personKey(state.name);
+  const today = dayKey(new Date());
+  const meetings = [...state.meetings].sort(byStart).map((m) => ({ m, day: dayKey(new Date(m.starts_at)) }));
+  const rows = calendarPeople().map((person) => ({
+    ...person,
+    cells: days.map((date) => meetings
+      .filter(({ day }) => day === dayKey(date))
+      .map(({ m }) => ({ id: m.id, title: m.title, time: formatTime(new Date(m.starts_at)), style: chipStyle(m, person.key) }))
+      .filter((chip) => chip.style)),
+  }));
+
+  // Only rebuilds when something shows differently, so keyboard focus survives a refresh.
+  const grid = $("week-grid");
+  const signature = JSON.stringify([days.map(dayKey), today, rows]);
+  if (grid.dataset.sig === signature) return;
+  grid.dataset.sig = signature;
+  grid.replaceChildren(
+    el("div", { class: "week-row", role: "row" },
+      el("div", { class: "week-corner", role: "columnheader" }, "People"),
+      ...days.map((date) => el("div", { class: `week-day${dayKey(date) === today ? " is-today" : ""}`, role: "columnheader" },
+        `${date.toLocaleDateString(undefined, { weekday: "short" })} ${date.getDate()}`))),
+    ...rows.map((row) => el("div", { class: "week-row", role: "row" },
+      el("div", { class: "week-person", role: "rowheader" }, row.key === me ? `${row.name} (you)` : row.name),
+      ...row.cells.map((chips, i) => el("div", { class: `week-cell${dayKey(days[i]) === today ? " is-today" : ""}`, role: "cell" },
+        el("button", {
+          class: "week-add",
+          type: "button",
+          "data-add-day": dayKey(days[i]),
+          "data-add-person": row.key === me ? null : row.name,
+          "aria-label": `Set a meeting${row.key === me ? "" : ` with ${row.name}`} on ${formatDay(days[i])}`,
+        }),
+        ...chips.map((chip) => el("button", { class: `week-chip${chip.style === "wait" ? " is-waiting" : ""}`, type: "button", "data-meeting": chip.id, title: `${chip.time} ${chip.title}` },
+          el("span", { class: "week-chip-time" }, chip.time), chip.title)))))));
+
+  // Too narrow for all seven days: open a week on today, and leave it alone after that.
+  if (grid.dataset.week !== dayKey(days[0])) {
+    grid.dataset.week = dayKey(days[0]);
+    const todayTab = grid.querySelector(".week-day.is-today");
+    const scroller = grid.parentElement;
+    scroller.scrollLeft = 0;
+    if (todayTab) scroller.scrollLeft = todayTab.getBoundingClientRect().left - grid.querySelector(".week-person").getBoundingClientRect().right;
+  }
+}
+
+function showWeek(start) {
+  state.weekStart = start;
+  renderCalendar();
+}
+
+$("week-prev").addEventListener("click", () => showWeek(addDays(state.weekStart, -7)));
+$("week-next").addEventListener("click", () => showWeek(addDays(state.weekStart, 7)));
+$("week-today").addEventListener("click", () => showWeek(startOfWeek(new Date())));
+$("meeting-waiting-open").addEventListener("click", (event) => openMeeting(event.target.dataset.meeting));
+
+$("week-grid").addEventListener("click", (event) => {
+  const chip = event.target.closest("[data-meeting]");
+  if (chip) return openMeeting(chip.dataset.meeting);
+  const add = event.target.closest("[data-add-day]");
+  if (add) openMeetingForm({ day: add.dataset.addDay, person: add.dataset.addPerson });
+});
+
+$("set-meeting-btn").addEventListener("click", () => {
+  const thisWeek = dayKey(startOfWeek(new Date())) === dayKey(state.weekStart);
+  openMeetingForm({ day: dayKey(thisWeek ? new Date() : state.weekStart) });
+});
+
+// ---------- A meeting's window ----------
+
+function openMeeting(id) {
+  const meeting = findMeeting(id);
+  if (!meeting) return;
+  const key = `meeting:${id}`;
+  let w = state.windows.get(key);
+  if (!w) {
+    w = createWindow(key, meeting.title);
+    w.meetingId = id;
+    w.height = Math.min(w.height, 540);
+    placeWindow(w);
+    buildMeetingWindow(w);
+    renderMeetingWindow(w);
+  }
+  showWindow(w);
+}
+
+function buildMeetingWindow(w) {
+  w.body.append(
+    el("span", { class: "meeting-status", "data-meeting-status": true }),
+    el("div", {},
+      el("p", { class: "meeting-when", "data-meeting-when": true }),
+      el("p", { class: "meeting-place", "data-meeting-place": true }),
+      el("p", { class: "meeting-notes", "data-meeting-notes": true })),
+    section("People",
+      el("ul", { class: "win-list", "data-list": "people" }),
+      el("form", { class: "win-form", "data-form": "add-person", novalidate: true },
+        textInput({ maxlength: "60", list: "people-list", placeholder: "Add a name", "aria-label": "Person to add", "data-input": "name" }),
+        el("button", { class: "btn btn-quiet", type: "submit" }, "Add person"))),
+    el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
+    el("div", { class: "meeting-actions", "data-list": "actions" }));
+  w.body.addEventListener("submit", (event) => addMeetingPerson(w, event));
+  w.body.addEventListener("click", (event) => onMeetingClick(w, event));
+}
+
+function renderMeetingWindow(w) {
+  const m = findMeeting(w.meetingId);
+  w.titleEl.textContent = m.title;
+  w.root.setAttribute("aria-label", m.title);
+  if (w.chip) w.chip.textContent = m.title;
+
+  const allDeclined = m.people.length && m.people.every((p) => p.answer === "declined");
+  const status = isConfirmed(m) ? ["Confirmed", "confirmed"] : allDeclined ? ["Everyone declined", "declined"] : ["Waiting for answers", "waiting"];
+  const statusEl = w.body.querySelector("[data-meeting-status]");
+  statusEl.textContent = status[0];
+  statusEl.className = `meeting-status is-${status[1]}`;
+
+  const start = new Date(m.starts_at), end = new Date(m.ends_at);
+  w.body.querySelector("[data-meeting-when]").textContent = `${formatDay(start)}, ${formatTime(start)} to ${formatTime(end)}`;
+  const place = w.body.querySelector("[data-meeting-place]");
+  place.hidden = !m.place;
+  place.replaceChildren(/^https?:\/\/\S+$/i.test(m.place)
+    ? el("a", { class: "link-btn", href: m.place, target: "_blank", rel: "noopener noreferrer" }, m.place)
+    : m.place);
+  const notes = w.body.querySelector("[data-meeting-notes]");
+  notes.hidden = !m.notes;
+  notes.textContent = m.notes;
+
+  const organizer = isOrganizer(m);
+  const mine = myInvite(m);
+  const you = (name) => (personKey(name) === personKey(state.name) ? `${name} (you)` : name);
+  renderList(w, "people", [m.created_by, m.people, organizer, state.name], () => [
+    el("li", { class: "win-item" },
+      el("span", { class: "win-item-main" }, you(m.created_by)),
+      el("span", { class: "win-meta" }, "Set this meeting")),
+    ...m.people.map((p) => el("li", { class: "win-item" },
+      el("span", { class: "win-item-main" }, you(p.name)),
+      el("span", { class: `meeting-answer answer-${p.answer}` }, ANSWER[p.answer]),
+      organizer && el("button", { class: "win-remove", type: "button", "data-remove-person": p.name, "aria-label": `Remove ${p.name}` }, "Remove"))),
+  ]);
+  w.body.querySelector('[data-form="add-person"]').hidden = !(organizer || mine);
+
+  renderList(w, "actions", [organizer, mine?.answer], () => [
+    mine?.answer === "waiting" && el("button", { class: "btn btn-accept", type: "button", "data-answer": "accepted" }, "Accept"),
+    mine?.answer === "waiting" && el("button", { class: "btn btn-decline", type: "button", "data-answer": "declined" }, "Decline"),
+    mine?.answer === "accepted" && el("span", { class: "win-meta" }, "You accepted. ",
+      el("button", { class: "link-btn", type: "button", "data-answer": "declined" }, "Change to declined")),
+    mine?.answer === "declined" && el("span", { class: "win-meta" }, "You declined. ",
+      el("button", { class: "link-btn", type: "button", "data-answer": "accepted" }, "Change to accepted")),
+    organizer && el("button", { class: "btn btn-quiet", type: "button", "data-edit-meeting": true }, "Edit"),
+    organizer && el("button", { class: "btn btn-danger", type: "button", "data-cancel-meeting": true }, "Cancel meeting"),
+  ].filter(Boolean));
+}
+
+function onMeetingClick(w, event) {
+  const target = event.target;
+  const answer = target.closest("[data-answer]");
+  if (answer) return answerMeeting(w, answer);
+  const remove = target.closest("[data-remove-person]");
+  if (remove) return removeMeetingPerson(w, remove);
+  if (target.closest("[data-edit-meeting]")) return openMeetingForm({ meeting: findMeeting(w.meetingId) });
+  const cancel = target.closest("[data-cancel-meeting]");
+  if (cancel) return cancelMeeting(w, cancel);
+}
+
+async function answerMeeting(w, button) {
+  button.disabled = true;
+  const result = await write(() => state.store.answerMeeting(w.meetingId, button.dataset.answer), null);
+  button.disabled = false;
+  if (w.root.isConnected) showWindowError(w, result.ok ? null : "Your answer didn't save. Check your connection and try again.");
+}
+
+async function addMeetingPerson(w, event) {
+  event.preventDefault();
+  const input = event.target.querySelector('[data-input="name"]');
+  const name = input.value.trim();
+  if (!name) return input.focus();
+  const button = event.target.querySelector('button[type="submit"]');
+  button.disabled = true;
+  const result = await write(() => state.store.addMeetingPerson(w.meetingId, name), null);
+  button.disabled = false;
+  if (!w.root.isConnected) return;
+  if (result.ok) {
+    event.target.reset();
+    showWindowError(w, null);
+    input.focus();
+  } else {
+    showWindowError(w, "That person wasn't added. Check your connection and try again.");
+  }
+}
+
+async function removeMeetingPerson(w, button) {
+  if (!armButton(button, "Confirm?", "Remove")) return;
+  button.disabled = true;
+  const result = await write(() => state.store.removeMeetingPerson(w.meetingId, button.dataset.removePerson), null);
+  button.disabled = false;
+  if (w.root.isConnected) showWindowError(w, result.ok ? null : "That person wasn't removed. Check your connection and try again.");
+}
+
+async function cancelMeeting(w, button) {
+  const id = w.meetingId;
+  if (!armButton(button, "Cancel for everyone?", "Cancel meeting")) return;
+  button.disabled = true;
+  // Its windows may close during the refresh below, before this function resumes.
+  const going = [w, state.windows.get(`edit-meeting:${id}`)].filter(Boolean);
+  going.forEach((open) => { open.deleting = true; });
+  const result = await write(() => state.store.cancelMeeting(id), null);
+  if (result.ok) {
+    going.forEach(closeWindow);
+    state.meetings = state.meetings.filter((m) => m.id !== id);
+    renderCalendar();
+  } else {
+    going.forEach((open) => { open.deleting = false; });
+    button.disabled = false;
+    showWindowError(w, "That meeting wasn't cancelled. Check your connection and try again.");
+  }
+}
+
+// ---------- Setting or editing a meeting ----------
+
+// With a meeting, edits it. Otherwise sets a new one, or adds to the form already open,
+// so clicking another day or person updates it rather than losing what's been typed.
+function openMeetingForm({ meeting = null, day = null, person = null } = {}) {
+  const key = meeting ? `edit-meeting:${meeting.id}` : "new-meeting";
+  let w = state.windows.get(key);
+  if (!w) {
+    w = createWindow(key, meeting ? `Edit: ${meeting.title}` : "Set meeting");
+    w.height = Math.min(w.height, meeting ? 500 : 640);
+    placeWindow(w);
+    if (meeting) {
+      w.meetingId = meeting.id;
+      w.isForm = true;
+    }
+    w.invited = [];
+    buildMeetingForm(w, meeting);
+  }
+  if (day) w.body.querySelector('[data-input="date"]').value = day;
+  if (person) addInvited(w, person);
+  showWindow(w);
+  w.body.querySelector('[data-input="title"]').focus();
+}
+
+function buildMeetingForm(w, meeting) {
+  const form = el("form", { class: "win-body", novalidate: true },
+    field("Title", textInput({ maxlength: "200", "data-input": "title" })),
+    field("Date", el("input", { class: "input", type: "date", "data-input": "date" })),
+    el("div", { class: "field-row meeting-times" },
+      field("Start", el("input", { class: "input", type: "time", "data-input": "start" })),
+      field("End", el("input", { class: "input", type: "time", "data-input": "end" }))),
+    field("Place or link", textInput({ maxlength: "500", "data-input": "place" })),
+    field("Notes", el("textarea", { class: "input", rows: "2", maxlength: "4000", "data-input": "notes" })),
+    !meeting && el("div", { class: "field" },
+      el("label", { class: "label", for: "meeting-person" }, "People to invite"),
+      el("ul", { class: "meeting-tags", "data-tags": true }),
+      textInput({ id: "meeting-person", maxlength: "60", list: "people-list", placeholder: "Add a name", "data-input": "person" }),
+      el("p", { class: "hint" }, "Invite nobody to block out your own time.")),
+    el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
+    el("div", { class: "win-new-actions" }, el("button", { class: "btn btn-primary", type: "submit" }, meeting ? "Save changes" : "Set meeting")));
+  w.body.replaceWith(form);
+  w.body = form;
+
+  const input = (name) => form.querySelector(`[data-input="${name}"]`);
+  const start = meeting && new Date(meeting.starts_at);
+  const end = meeting && new Date(meeting.ends_at);
+  input("title").value = meeting?.title || "";
+  input("date").value = dayKey(start || new Date());
+  input("start").value = start ? clockValue(start) : "09:00";
+  input("end").value = end ? clockValue(end) : "10:00";
+  input("place").value = meeting?.place || "";
+  input("notes").value = meeting?.notes || "";
+
+  // A later start pushes the end along, so the meeting keeps its length of an hour.
+  input("start").addEventListener("change", () => {
+    if (!input("start").value || input("end").value > input("start").value) return;
+    const [hours, minutes] = input("start").value.split(":").map(Number);
+    input("end").value = hours >= 23 ? "23:59" : `${pad2(hours + 1)}:${pad2(minutes)}`;
+  });
+  form.addEventListener("submit", (event) => submitMeetingForm(w, meeting, event));
+  if (meeting) return;
+
+  const box = input("person");
+  const take = () => {
+    addInvited(w, box.value);
+    box.value = "";
+  };
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === ",") {
+      event.preventDefault();
+      take();
+    }
+  });
+  box.addEventListener("blur", take);
+  // Typing reports what kind of input it was. Picking a suggestion doesn't count as typing.
+  box.addEventListener("input", (event) => {
+    if (!event.inputType || event.inputType === "insertReplacementText") take();
+  });
+  form.addEventListener("click", (event) => {
+    const untag = event.target.closest("[data-untag]");
+    if (!untag) return;
+    w.invited = w.invited.filter((name) => name !== untag.dataset.untag);
+    renderInvited(w);
+    box.focus();
+  });
+}
+
+function addInvited(w, name) {
+  const key = personKey(name);
+  if (!key || key === personKey(state.name) || w.invited.some((other) => personKey(other) === key)) return;
+  w.invited.push(name.trim());
+  renderInvited(w);
+}
+
+function renderInvited(w) {
+  w.body.querySelector("[data-tags]").replaceChildren(...w.invited.map((name) => el("li", { class: "meeting-tag" }, name,
+    el("button", { class: "meeting-tag-x", type: "button", "data-untag": name, "aria-label": `Don't invite ${name}` }, "×"))));
+}
+
+async function submitMeetingForm(w, meeting, event) {
+  event.preventDefault();
+  const form = w.body;
+  const value = (name) => form.querySelector(`[data-input="${name}"]`).value.trim();
+  const fail = (message, name) => {
+    showWindowError(w, message);
+    form.querySelector(`[data-input="${name}"]`).focus();
+  };
+  const [title, date, start, end] = ["title", "date", "start", "end"].map(value);
+  if (!title) return fail("Give the meeting a title.", "title");
+  if (!date) return fail("Choose a date.", "date");
+  if (!start || !end) return fail("Choose a start and end time.", start ? "end" : "start");
+  if (end <= start) return fail("The meeting has to end after it starts.", "end");
+  showWindowError(w, null);
+
+  const fields = {
+    title,
+    starts_at: new Date(`${date}T${start}`).toISOString(),
+    ends_at: new Date(`${date}T${end}`).toISOString(),
+    place: value("place"),
+    notes: value("notes"),
+  };
+  if (!meeting) {
+    addInvited(w, value("person"));
+    fields.people = [...w.invited];
+  }
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  const saved = await write(() => state.store.saveMeeting(meeting?.id ?? null, fields), null);
+  button.disabled = false;
+  if (!saved.ok) return showWindowError(w, "That meeting didn't save. Check your connection and try again.");
+
+  const { x, y, width } = w;
+  closeWindow(w);
+  const id = saved.result.id;
+  if (!findMeeting(id)) {
+    state.meetings.push({ ...saved.result, people: (fields.people || []).map((name) => ({ name, name_key: personKey(name), answer: "waiting" })) });
+  }
+  showWeek(startOfWeek(new Date(fields.starts_at)));
+  openMeeting(id);
+  const opened = state.windows.get(`meeting:${id}`);
+  Object.assign(opened, { x, y, width });
+  placeWindow(opened);
+}
+
 // ---------- Notifications ----------
 
 // A notification's two lines: what happened, then which item it's about.
 function notificationLines(n) {
+  if (n.kind === "meeting") {
+    const start = new Date(n.starts_at);
+    const when = `${formatDay(start)}, ${formatTime(start)}`;
+    return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, n.action === "changed" ? `now ${when}` : when]];
+  }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
   if (n.action !== "deleted") return [`${n.by_name} assigned you a ${n.kind}`, where];
   if (!n.inside_count) return [`${n.by_name} deleted your ${n.kind}`, where];
@@ -1450,12 +1931,12 @@ function renderNotifications() {
     ? state.notifications.map((n) => {
       const [headline, details] = notificationLines(n);
       return el("li", {},
-        el("button", { class: `notify-item${n.read_at ? "" : " is-unread"}`, type: "button", "data-notification": n.id, "data-task": n.task_id },
+        el("button", { class: `notify-item${n.read_at ? "" : " is-unread"}`, type: "button", "data-notification": n.id, "data-task": n.task_id, "data-open-meeting": n.meeting_id },
           headline,
           el("span", { class: "notify-task" }, details.filter(Boolean).join(" · ")),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. When someone assigns you a task or subtask, or deletes something you created, it shows up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. When someone assigns you a task, invites you to a meeting, or deletes something you created, it shows up here.")]));
 }
 
 function closeNotifications() {
@@ -1486,6 +1967,7 @@ $("notify-list").addEventListener("click", (event) => {
   markNotificationsRead([item.dataset.notification]);
   closeNotifications();
   openTask(item.dataset.task);
+  openMeeting(item.dataset.openMeeting);
 });
 
 document.addEventListener("pointerdown", (event) => {
