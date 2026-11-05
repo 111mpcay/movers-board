@@ -21,6 +21,7 @@ const state = {
   leavingProject: null, // a project this person is deleting, so its page goes quietly
   tasks: [],
   notifications: [],
+  deleted: [], // what was deleted lately, so a page that had it open can say who did it
   people: [],
   version: -1,
   name: "",
@@ -285,6 +286,7 @@ function showGate(message) {
   state.projectId = null;
   state.tasks = [];
   state.notifications = [];
+  state.deleted = [];
   state.people = [];
   state.version = -1;
   state.store.setToken(null);
@@ -320,13 +322,18 @@ function routeProjectId() {
   return location.hash.match(/^#project=(.+)$/)?.[1] || null;
 }
 
+function deletedNote(id, fallback) {
+  const gone = state.deleted.find((d) => d.item_id === id);
+  return gone ? `${gone.by_name} deleted the ${gone.kind} "${gone.title}".` : fallback;
+}
+
 // The address decides which page shows, so Back and refresh both work.
 function syncRoute() {
   const id = routeProjectId();
   const exists = state.projects.some((p) => p.id === id);
   if (id && !exists) {
     history.replaceState(null, "", location.pathname + location.search);
-    if (id !== state.leavingProject) showSyncNote("That project is no longer on the board.");
+    if (id !== state.leavingProject) showSyncNote(deletedNote(id, "That project is no longer on the board."));
   }
   state.projectId = exists ? id : null;
   $("projects-view").hidden = !!state.projectId;
@@ -587,6 +594,7 @@ function renderRows() {
 }
 
 function renderBoard() {
+  renderWindows(); // first, so a deleted project's note replaces the notes for its tasks
   syncRoute();
   renderProjectCards();
   renderProjectPage();
@@ -594,7 +602,6 @@ function renderBoard() {
   renderSummary();
   renderPeople();
   renderNotifications();
-  renderWindows();
 }
 
 function refreshRow(id, focusField) {
@@ -789,6 +796,7 @@ async function refresh() {
         state.projects = result.projects || [];
         state.tasks = result.tasks;
         state.notifications = result.notifications || [];
+        state.deleted = result.deleted || [];
         state.people = result.people || [];
         renderBoard();
       }
@@ -1151,7 +1159,7 @@ function renderWindows() {
     if (findTask(w.taskId)) renderTaskWindow(w);
     else {
       closeWindow(w);
-      if (!w.deleting) showSyncNote("A task you had open was deleted by someone else.");
+      if (!w.deleting) showSyncNote(deletedNote(w.taskId, "A task you had open was deleted by someone else."));
     }
   }
 }
@@ -1423,6 +1431,15 @@ $("add-btn").addEventListener("click", openNewTask);
 
 // ---------- Notifications ----------
 
+// A notification's two lines: what happened, then which item it's about.
+function notificationLines(n) {
+  const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
+  if (n.action !== "deleted") return [`${n.by_name} assigned you a ${n.kind}`, where];
+  if (!n.inside_count) return [`${n.by_name} deleted your ${n.kind}`, where];
+  const yours = n.inside_count === 1 ? "1 item" : `${n.inside_count} items`;
+  return [`${n.by_name} deleted a ${n.kind}`, [...where, `included ${yours} you created`]];
+}
+
 function renderNotifications() {
   const unread = state.notifications.filter((n) => !n.read_at).length;
   $("notify-count").textContent = unread;
@@ -1430,12 +1447,15 @@ function renderNotifications() {
   $("notify-btn").setAttribute("aria-label", unread ? `Notifications, ${unread} unread` : "Notifications");
   $("notify-read-all").hidden = !unread;
   $("notify-list").replaceChildren(...(state.notifications.length
-    ? state.notifications.map((n) => el("li", {},
-      el("button", { class: `notify-item${n.read_at ? "" : " is-unread"}`, type: "button", "data-notification": n.id, "data-task": n.task_id },
-        `${n.by_name} assigned you a ${n.kind}`,
-        el("span", { class: "notify-task" }, [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name].filter(Boolean).join(" · ")),
-        el("span", { class: "notify-time" }, timeAgo(n.created_at)))))
-    : [el("li", { class: "notify-empty" }, "Nothing yet. When someone assigns you a task or subtask, it shows up here.")]));
+    ? state.notifications.map((n) => {
+      const [headline, details] = notificationLines(n);
+      return el("li", {},
+        el("button", { class: `notify-item${n.read_at ? "" : " is-unread"}`, type: "button", "data-notification": n.id, "data-task": n.task_id },
+          headline,
+          el("span", { class: "notify-task" }, details.filter(Boolean).join(" · ")),
+          el("span", { class: "notify-time" }, timeAgo(n.created_at))));
+    })
+    : [el("li", { class: "notify-empty" }, "Nothing yet. When someone assigns you a task or subtask, or deletes something you created, it shows up here.")]));
 }
 
 function closeNotifications() {
