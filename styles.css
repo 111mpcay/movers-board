@@ -795,6 +795,8 @@ body::before {
 .week-chip:hover { box-shadow: 0 2px 6px rgb(23 48 74 / 0.35); }
 .week-chip.is-waiting { color: var(--warn-fg); background: var(--surface); border: 1px dashed var(--orange); }
 .week-chip-time { display: block; font-weight: 700; font-variant-numeric: tabular-nums; }
+.week-chip-repeat { margin-left: 5px; font-weight: 400; }
+.week-legend .week-chip-repeat { margin: 0 3px 0 0; font-size: 1rem; color: var(--ink); }
 .week-chip-sample { display: inline-block; width: auto; margin-right: 3px; cursor: default; }
 .week-chip-sample:hover { box-shadow: none; }
 .week-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 12px; font-size: 0.85rem; color: var(--muted); }
@@ -805,6 +807,7 @@ body::before {
 .meeting-status.is-waiting { color: var(--warn-fg); background: var(--warn-bg); }
 .meeting-status.is-declined { color: var(--danger); background: var(--danger-bg); }
 .meeting-when { font-weight: 700; }
+.meeting-next { font-size: 0.9rem; color: var(--muted); }
 .meeting-place { overflow-wrap: anywhere; }
 .meeting-notes { margin-top: 3px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .meeting-answer { font-size: 0.85rem; font-weight: 600; }

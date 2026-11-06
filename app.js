@@ -1861,6 +1861,54 @@ const isOrganizer = (m) => personKey(m.created_by) === personKey(state.name);
 const myInvite = (m) => m.people.find((p) => p.name_key === personKey(state.name));
 const isConfirmed = (m) => !m.people.length || m.people.some((p) => p.answer === "accepted");
 const byStart = (a, b) => new Date(a.starts_at) - new Date(b.starts_at);
+const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
+
+// How often a repeating meeting is on, in words: "every Monday", or "every month on the
+// 9th". Its first date sets the day.
+function repeatPhrase(repeat, first) {
+  if (repeat === "weekly") return `every ${first.toLocaleDateString(undefined, { weekday: "long" })}`;
+  const day = first.getDate();
+  return `every month on the ${ordinal(day)}${day > 28 ? " (the last day in shorter months)" : ""}`;
+}
+
+// A meeting's day and time for a notice: "Mon, Nov 9, 9:00 AM", or "every Monday, 9:00 AM".
+function meetingWhen(repeat, startsAt) {
+  const start = new Date(startsAt);
+  return `${repeat && repeat !== "none" ? repeatPhrase(repeat, start) : formatDay(start)}, ${formatTime(start)}`;
+}
+
+// When a meeting starts on the given day, or null if it isn't on then. A repeating one
+// is on the same weekday every week, or the same date every month, from its first day
+// on. The board keeps one meeting for the whole series, so these dates are worked out here.
+function occurrenceOn(m, date) {
+  const first = new Date(m.starts_at);
+  const firstDay = new Date(first.getFullYear(), first.getMonth(), first.getDate());
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  if (day < firstDay) return null;
+  if (day > firstDay) {
+    if (!repeats(m)) return null;
+    if (m.repeat === "weekly" && day.getDay() !== first.getDay()) return null;
+    if (m.repeat === "monthly") {
+      const lastOfMonth = new Date(day.getFullYear(), day.getMonth() + 1, 0).getDate();
+      if (day.getDate() !== Math.min(first.getDate(), lastOfMonth)) return null;
+    }
+  }
+  return new Date(day.getFullYear(), day.getMonth(), day.getDate(), first.getHours(), first.getMinutes());
+}
+
+// The start of the next time a meeting is on: the one running now, or the first still to come.
+function nextOccurrence(m, from = new Date()) {
+  const first = new Date(m.starts_at);
+  if (!repeats(m)) return first;
+  const length = new Date(m.ends_at) - first;
+  const begin = from > first ? from : first;
+  for (let i = 0; i < 64; i++) {
+    const at = occurrenceOn(m, addDays(begin, i));
+    if (at && at.getTime() + length > from.getTime()) return at;
+  }
+  return first;
+}
 
 // Everyone the board knows about, with this person first.
 function calendarPeople() {
@@ -1878,12 +1926,18 @@ function chipStyle(m, key) {
 }
 
 function renderWaitingBanner() {
-  const now = Date.now();
-  const waiting = state.meetings.filter((m) => myInvite(m)?.answer === "waiting" && new Date(m.ends_at).getTime() > now).sort(byStart);
+  // A repeating meeting never ends, so it keeps asking until it's answered.
+  const now = new Date();
+  const waiting = state.meetings
+    .filter((m) => myInvite(m)?.answer === "waiting" && (repeats(m) || new Date(m.ends_at) > now))
+    .map((m) => ({ m, at: nextOccurrence(m, now) }))
+    .sort((a, b) => a.at - b.at);
   $("meeting-waiting").hidden = !waiting.length;
   if (!waiting.length) return;
-  const next = waiting[0];
-  const what = `${next.title}, ${formatDay(new Date(next.starts_at))}`;
+  const { m: next, at } = waiting[0];
+  const what = repeats(next)
+    ? `${next.title}, ${repeatPhrase(next.repeat, new Date(next.starts_at))} from ${formatDay(at)}`
+    : `${next.title}, ${formatDay(at)}`;
   $("meeting-waiting-text").textContent = waiting.length === 1
     ? `1 meeting is waiting for your answer: ${what}`
     : `${waiting.length} meetings are waiting for your answer. Next: ${what}`;
@@ -1901,12 +1955,21 @@ function renderCalendar() {
 
   const me = personKey(state.name);
   const today = dayKey(new Date());
-  const meetings = [...state.meetings].sort(byStart).map((m) => ({ m, day: dayKey(new Date(m.starts_at)) }));
+  // What's on each day, in order of time: one-time meetings, and this week's turn of repeating ones.
+  const onDay = days.map((date) => state.meetings
+    .map((m) => ({ m, at: occurrenceOn(m, date) }))
+    .filter(({ at }) => at)
+    .sort((a, b) => a.at - b.at || byStart(a.m, b.m)));
   const rows = calendarPeople().map((person) => ({
     ...person,
-    cells: days.map((date) => meetings
-      .filter(({ day }) => day === dayKey(date))
-      .map(({ m }) => ({ id: m.id, title: m.title, time: formatTime(new Date(m.starts_at)), style: chipStyle(m, person.key) }))
+    cells: onDay.map((meetings) => meetings
+      .map(({ m, at }) => ({
+        id: m.id,
+        title: m.title,
+        time: formatTime(at),
+        repeat: repeats(m) ? repeatPhrase(m.repeat, new Date(m.starts_at)) : null,
+        style: chipStyle(m, person.key),
+      }))
       .filter((chip) => chip.style)),
   }));
 
@@ -1930,8 +1993,15 @@ function renderCalendar() {
           "data-add-person": row.key === me ? null : row.name,
           "aria-label": `Set a meeting${row.key === me ? "" : ` with ${row.name}`} on ${formatDay(days[i])}`,
         }),
-        ...chips.map((chip) => el("button", { class: `week-chip${chip.style === "wait" ? " is-waiting" : ""}`, type: "button", "data-meeting": chip.id, title: `${chip.time} ${chip.title}` },
-          el("span", { class: "week-chip-time" }, chip.time), chip.title)))))));
+        ...chips.map((chip) => el("button", {
+          class: `week-chip${chip.style === "wait" ? " is-waiting" : ""}`,
+          type: "button",
+          "data-meeting": chip.id,
+          title: `${chip.time} ${chip.title}${chip.repeat ? ` (${chip.repeat})` : ""}`,
+          "aria-label": chip.repeat && `${chip.time} ${chip.title}, ${chip.repeat}`,
+        },
+          el("span", { class: "week-chip-time" }, chip.time, chip.repeat && el("span", { class: "week-chip-repeat", "aria-hidden": "true" }, "↻")),
+          chip.title)))))));
 
   // Too narrow for all seven days: open a week on today, and leave it alone after that.
   if (grid.dataset.week !== dayKey(days[0])) {
@@ -1988,6 +2058,7 @@ function buildMeetingWindow(w) {
     el("span", { class: "meeting-status", "data-meeting-status": true }),
     el("div", {},
       el("p", { class: "meeting-when", "data-meeting-when": true }),
+      el("p", { class: "meeting-next", "data-meeting-next": true, hidden: true }),
       el("p", { class: "meeting-place", "data-meeting-place": true }),
       el("p", { class: "meeting-notes", "data-meeting-notes": true })),
     section("People",
@@ -2014,7 +2085,11 @@ function renderMeetingWindow(w) {
   statusEl.className = `meeting-status is-${status[1]}`;
 
   const start = new Date(m.starts_at), end = new Date(m.ends_at);
-  w.body.querySelector("[data-meeting-when]").textContent = `${formatDay(start)}, ${formatTime(start)} to ${formatTime(end)}`;
+  const day = repeats(m) ? capitalize(repeatPhrase(m.repeat, start)) : formatDay(start);
+  w.body.querySelector("[data-meeting-when]").textContent = `${day}, ${formatTime(start)} to ${formatTime(end)}`;
+  const next = w.body.querySelector("[data-meeting-next]");
+  next.hidden = !repeats(m);
+  next.textContent = repeats(m) ? `Next: ${formatDay(nextOccurrence(m))}` : "";
   const place = w.body.querySelector("[data-meeting-place]");
   place.hidden = !m.place;
   place.replaceChildren(/^https?:\/\/\S+$/i.test(m.place)
@@ -2123,7 +2198,7 @@ function openMeetingForm({ meeting = null, day = null, person = null } = {}) {
   let w = state.windows.get(key);
   if (!w) {
     w = createWindow(key, meeting ? `Edit: ${meeting.title}` : "Set meeting");
-    w.height = Math.min(w.height, meeting ? 500 : 640);
+    w.height = Math.min(w.height, meeting ? 590 : 730);
     placeWindow(w);
     if (meeting) {
       w.meetingId = meeting.id;
@@ -2131,7 +2206,10 @@ function openMeetingForm({ meeting = null, day = null, person = null } = {}) {
     }
     buildMeetingForm(w, meeting);
   }
-  if (day) w.body.querySelector('[data-input="date"]').value = day;
+  if (day) {
+    w.body.querySelector('[data-input="date"]').value = day;
+    w.showRepeatNote();
+  }
   if (person) w.invitePicker.add(person);
   showWindow(w);
   w.body.querySelector('[data-input="title"]').focus();
@@ -2145,6 +2223,9 @@ function buildMeetingForm(w, meeting) {
     el("div", { class: "field-row meeting-times" },
       field("Start", el("input", { class: "input", type: "time", "data-input": "start" })),
       field("End", el("input", { class: "input", type: "time", "data-input": "end" }))),
+    field("Repeats",
+      el("select", { class: "input", "data-input": "repeat" }, ...Object.entries(REPEATS).map(([key, text]) => el("option", { value: key }, text))),
+      el("span", { class: "hint", "data-repeat-note": true })),
     field("Place or link", textInput({ maxlength: "500", "data-input": "place" })),
     field("Notes", el("textarea", { class: "input", rows: "2", maxlength: "4000", "data-input": "notes" })),
     !meeting && el("div", { class: "field" },
@@ -2165,6 +2246,19 @@ function buildMeetingForm(w, meeting) {
   input("end").value = end ? clockValue(end) : "10:00";
   input("place").value = meeting?.place || "";
   input("notes").value = meeting?.notes || "";
+  input("repeat").value = meeting && repeats(meeting) ? meeting.repeat : "none";
+
+  // Says in words what the choice means for the date picked: which day, and from when.
+  w.showRepeatNote = () => {
+    const repeat = input("repeat").value;
+    const day = input("date").value && parseDate(input("date").value);
+    form.querySelector("[data-repeat-note]").textContent = repeat === "none" || !day
+      ? ""
+      : `${capitalize(repeatPhrase(repeat, day))} from ${formatDay(day)}, until it's cancelled.`;
+  };
+  input("repeat").addEventListener("change", w.showRepeatNote);
+  input("date").addEventListener("change", w.showRepeatNote);
+  w.showRepeatNote();
 
   // A later start pushes the end along, so the meeting keeps its length of an hour.
   input("start").addEventListener("change", () => {
@@ -2196,6 +2290,7 @@ async function submitMeetingForm(w, meeting, event) {
     ends_at: new Date(`${date}T${end}`).toISOString(),
     place: value("place"),
     notes: value("notes"),
+    repeat: value("repeat"),
   };
   if (!meeting) fields.people = w.invitePicker.names();
   const button = form.querySelector('button[type="submit"]');
@@ -2222,8 +2317,7 @@ async function submitMeetingForm(w, meeting, event) {
 // A notification's two lines: what happened, then which item it's about.
 function notificationLines(n) {
   if (n.kind === "meeting") {
-    const start = new Date(n.starts_at);
-    const when = `${formatDay(start)}, ${formatTime(start)}`;
+    const when = meetingWhen(n.repeat, n.starts_at);
     return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, n.action === "changed" ? `now ${when}` : when]];
   }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
