@@ -875,6 +875,7 @@ body::before {
 /* Notifications. The top bar has to rise above open windows while the list is showing. */
 .topbar:has(.notify-panel:not([hidden])) { z-index: 6000; }
 .notify { position: relative; }
+.notify-bell { margin-right: 7px; vertical-align: -3px; }
 .notify-count {
   display: inline-block;
   min-width: 20px;
