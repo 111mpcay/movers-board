@@ -2526,10 +2526,10 @@ function renderToday() {
         el("span", { class: "today-text" }, entry.note ? `“${entry.text}”` : entry.text))))))));
 }
 
-$("today-summary").open = readStorage("localStorage", TODAY_OPEN_KEY) !== "0";
-// Folded or open is this person's choice, kept on this device.
+// Folded away until someone opens it. Their choice is kept on this device.
+$("today-summary").open = readStorage("localStorage", TODAY_OPEN_KEY) === "1";
 $("today-summary").addEventListener("toggle", () => {
-  writeStorage("localStorage", TODAY_OPEN_KEY, $("today-summary").open ? null : "0");
+  writeStorage("localStorage", TODAY_OPEN_KEY, $("today-summary").open ? "1" : null);
 });
 $("today-list").addEventListener("click", (event) => {
   const task = event.target.closest("[data-open-task]");
