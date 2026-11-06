@@ -1497,6 +1497,10 @@ function buildTaskWindow(w, task) {
       el("output", { class: "progress-label" }, "0%"),
       el("input", { class: "progress-range", type: "range", min: "0", max: "100", step: "5", "data-field": "progress" }))),
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
+    // Only there when a meeting has been linked to this task.
+    el("section", { class: "win-section", "data-section": "meetings", hidden: true },
+      el("h3", { class: "win-heading" }, "Meetings", el("span", { class: "win-count", "data-count": "meetings" })),
+      el("ul", { class: "win-list", "data-list": "meetings" })),
     !isSubtask && el("details", { class: "win-fold" },
       el("summary", { class: "win-heading" }, "Subtasks", el("span", { class: "win-count", "data-count": "subtasks" })),
       el("ul", { class: "win-list", "data-list": "subtasks" }),
@@ -1598,6 +1602,28 @@ function renderTaskWindow(w) {
   noteEl.className = `due-note${note ? ` due-${note.tone}` : ""}`;
   const parentLink = w.body.querySelector(".win-parent [data-open-task]");
   if (parentLink) parentLink.textContent = findTask(task.parent_id)?.title || "";
+
+  // Meetings linked to this task that this person can see: those still to come soonest
+  // first, then the ones that are over.
+  const now = new Date();
+  const meetings = state.meetings.filter((m) => m.task_id === task.id).map((m) => {
+    const first = new Date(m.starts_at);
+    const past = !repeats(m) && new Date(m.ends_at) <= now;
+    const at = repeats(m) ? nextOccurrence(m, now) : first;
+    const when = repeats(m)
+      ? `${capitalize(repeatPhrase(m.repeat, first))}, ${formatTime(first)} · next ${formatDay(at)}`
+      : `${formatDay(first)}, ${formatTime(first)}`;
+    return { id: m.id, title: m.title, when, past, at: at.getTime(), status: meetingStatus(m) };
+  }).sort((a, b) => a.past - b.past || (a.past ? b.at - a.at : a.at - b.at));
+  w.body.querySelector('[data-section="meetings"]').hidden = !meetings.length;
+  setCount(w, "meetings", meetings.length ? String(meetings.length) : "");
+  renderList(w, "meetings", meetings, () => meetings.map((m) => el("li", { class: `win-item${m.past ? " is-past" : ""}` },
+    el("span", { class: "win-item-main" },
+      el("button", { class: "link-btn", type: "button", "data-open-meeting": m.id }, m.title)),
+    el("span", { class: "win-meta" }, m.when),
+    m.past
+      ? el("span", { class: "win-meta" }, "Past")
+      : el("span", { class: `meeting-answer answer-${m.status[1]}` }, m.status[0]))));
 
   const subtasks = subtasksOf(task.id);
   setCount(w, "subtasks", subtasks.length ? `${subtasks.filter((s) => s.status === "done").length}/${subtasks.length}` : "");
@@ -1739,6 +1765,8 @@ function onWindowClick(w, event) {
   const target = event.target;
   const opener = target.closest("[data-open-task]");
   if (opener) return openTask(opener.dataset.openTask);
+  const meeting = target.closest("[data-open-meeting]");
+  if (meeting) return openMeeting(meeting.dataset.openMeeting);
   const assign = target.closest("[data-assign]");
   if (assign) return startAssigning(w, assign);
   const file = target.closest("[data-file]");
@@ -1956,6 +1984,9 @@ const isOrganizer = (m) => personKey(m.created_by) === personKey(state.name);
 const myInvite = (m) => m.people.find((p) => p.name_key === personKey(state.name));
 const isConfirmed = (m) => !m.people.length || m.people.some((p) => p.answer === "accepted");
 const byStart = (a, b) => new Date(a.starts_at) - new Date(b.starts_at);
+// Where a meeting stands, in words, and the name of the color that goes with it.
+const meetingStatus = (m) => (isConfirmed(m) ? ["Confirmed", "accepted"]
+  : m.people.every((p) => p.answer === "declined") ? ["Everyone declined", "declined"] : ["Waiting for answers", "waiting"]);
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
 
@@ -2175,11 +2206,10 @@ function renderMeetingWindow(w) {
   w.root.setAttribute("aria-label", m.title);
   if (w.chip) w.chip.textContent = m.title;
 
-  const allDeclined = m.people.length && m.people.every((p) => p.answer === "declined");
-  const status = isConfirmed(m) ? ["Confirmed", "confirmed"] : allDeclined ? ["Everyone declined", "declined"] : ["Waiting for answers", "waiting"];
+  const status = meetingStatus(m);
   const statusEl = w.body.querySelector("[data-meeting-status]");
   statusEl.textContent = status[0];
-  statusEl.className = `meeting-status is-${status[1]}`;
+  statusEl.className = `meeting-status is-${status[1] === "accepted" ? "confirmed" : status[1]}`;
 
   const start = new Date(m.starts_at), end = new Date(m.ends_at);
   const day = repeats(m) ? capitalize(repeatPhrase(m.repeat, start)) : formatDay(start);

@@ -826,6 +826,8 @@ body::before {
 .meeting-task-label { font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .meeting-task-name { font-weight: 700; }
 .meeting-task .project-progress { margin-top: 4px; }
+/* A task's meetings, in its window: ones that are over step back. */
+.win-item.is-past .link-btn { color: var(--muted); }
 
 /* Picking that task when setting the meeting */
 .task-picker { width: 100%; min-width: 0; }
