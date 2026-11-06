@@ -2605,20 +2605,22 @@ function renderPeoplePage() {
         el("span", { class: "person-toggle", "aria-hidden": "true" })),
       el("span", { class: "load-bar", "aria-hidden": "true" },
         el("span", { class: "load-fill", style: `width: ${c.width}%` },
-          ...URGENCY_ORDER.filter((level) => c.levels[level]).map((level) => el("i", { class: `load-${level}`, style: `flex: ${c.levels[level]}` })))),
-      el("span", { class: "person-levels" },
+          ...URGENCY_ORDER.filter((level) => c.levels[level]).map((level) => el("i", { class: `load-${level}`, style: `flex: ${c.levels[level]}` }))))),
+    // The row itself stays to one line. The breakdown and the tasks are inside.
+    el("div", { class: "person-body" },
+      (c.count > 0 || c.done > 0) && el("p", { class: "person-levels" },
         ...URGENCY_ORDER.filter((level) => c.levels[level]).flatMap((level) => [
           el("span", { class: "person-level" }, el("span", { class: `dot dot-${level}`, "aria-hidden": "true" }), `${c.levels[level]} ${URGENCY[level]}`), " "]),
         c.overdue > 0 && el("span", { class: "person-overdue" }, `${c.overdue} overdue`), " ",
-        c.done > 0 && el("span", { class: "person-done" }, `${c.done} done`))),
-    c.tasks.length
-      ? el("ul", { class: "person-tasks" }, ...c.tasks.map((t) => el("li", { class: "person-task", "data-person-task": t.id },
-        el("span", { class: `dot dot-${t.urgency}`, role: "img", "aria-label": `${URGENCY[t.urgency]} urgency`, title: `${URGENCY[t.urgency]} urgency` }),
-        el("span", { class: "person-task-main" },
-          el("button", { class: "link-btn", type: "button", "data-open-task": t.id }, t.title),
-          el("span", { class: "win-meta" }, t.about)),
-        t.due && el("span", { class: `due-note due-${t.due.tone}` }, t.due.text))))
-      : el("p", { class: "win-empty person-none" }, "Nothing open."))));
+        c.done > 0 && el("span", { class: "person-done" }, `${c.done} done`)),
+      c.tasks.length
+        ? el("ul", { class: "person-tasks" }, ...c.tasks.map((t) => el("li", { class: "person-task", "data-person-task": t.id },
+          el("span", { class: `dot dot-${t.urgency}`, role: "img", "aria-label": `${URGENCY[t.urgency]} urgency`, title: `${URGENCY[t.urgency]} urgency` }),
+          el("span", { class: "person-task-main" },
+            el("button", { class: "link-btn", type: "button", "data-open-task": t.id }, t.title), " ",
+            el("span", { class: "win-meta" }, t.about)),
+          t.due && el("span", { class: `due-note due-${t.due.tone}` }, t.due.text))))
+        : el("p", { class: "win-empty person-none" }, "Nothing open.")))));
 }
 
 $("people-cards").addEventListener("click", (event) => {

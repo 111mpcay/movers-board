@@ -703,43 +703,51 @@ body::before {
 /* Something a person wrote, as opposed to the record of a change. */
 .today-entry.is-note .today-text { padding: 1px 6px; background: var(--updates-bg); border-radius: 4px; }
 
-/* People: who has what, and how much of it is urgent */
-.people-hint { max-width: 760px; margin: -6px 0 14px; font-size: 0.88rem; color: var(--muted); }
-.people-cards { display: grid; gap: 10px; max-width: 900px; }
-.person-card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
-.person-card.is-unassigned { border-style: dashed; }
-.person-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 9px 14px; padding: 12px 14px; cursor: pointer; list-style: none; }
+/* People: who has what, and how much of it is urgent. One slim row per person, in a
+   single panel. The breakdown and the tasks are inside the row, for whoever opens it. */
+.people-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 14px; margin: -8px 0 10px; font-size: 0.8rem; color: var(--muted); }
+.people-key { display: inline-flex; align-items: center; gap: 5px; }
+.people-key i { width: 9px; height: 9px; border-radius: 2px; }
+.people-cards { max-width: 760px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.people-cards:empty { display: none; }
+.person-card + .person-card { border-top: 1px solid var(--line); }
+.person-head { display: grid; grid-template-columns: minmax(90px, 170px) minmax(60px, 1fr) auto; align-items: center; gap: 4px 14px; padding: 7px 12px; font-size: 0.88rem; cursor: pointer; list-style: none; }
 .person-head::-webkit-details-marker { display: none; }
 .person-head:hover { background: var(--surface-2); }
-.person-card[open] > .person-head { border-bottom: 1px solid var(--line); }
-.person-name { justify-self: start; padding: 3px 12px; font-size: 0.95rem; font-weight: 600; }
-.person-nobody { padding-left: 0; color: var(--muted); }
-.person-figures { display: flex; align-items: baseline; gap: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.person-urgent { color: var(--muted); }
+.person-name { grid-column: 1; grid-row: 1; justify-self: start; max-width: 100%; padding: 1px 9px; font-size: 0.85rem; font-weight: 600; }
+.person-nobody { padding-left: 0; font-weight: 500; color: var(--muted); }
+.load-bar { grid-column: 2; grid-row: 1; display: block; height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; }
+.person-figures { grid-column: 3; grid-row: 1; display: flex; align-items: baseline; gap: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.person-urgent { min-width: 4.6em; text-align: right; color: var(--muted); }
 .person-urgent.has-urgent { font-weight: 700; color: var(--danger); }
-.person-open { font-weight: 700; }
-.person-toggle::before { content: "▸"; display: inline-block; color: var(--muted); transition: transform 0.12s; }
+.person-open { min-width: 3.6em; text-align: right; font-weight: 600; }
+.person-toggle::before { content: "▸"; display: inline-block; font-size: 0.8em; color: var(--muted); transition: transform 0.12s; }
 .person-card[open] .person-toggle::before { transform: rotate(90deg); }
 /* How much each person has, against the busiest: split by urgency, most urgent first. */
-.load-bar { grid-column: 1 / -1; display: block; height: 10px; background: var(--track); border-radius: 5px; overflow: hidden; }
 .load-fill { display: flex; height: 100%; }
 .load-fill i { display: block; min-width: 3px; }
 .load-critical { background: var(--critical); }
 .load-high { background: var(--red); }
 .load-normal { background: var(--dot-orange); }
 .load-low { background: var(--dot-grey); }
-.person-levels { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 0.85rem; color: var(--muted); }
-.person-levels:empty { display: none; }
-.person-level { display: inline-flex; align-items: center; gap: 6px; }
-.person-level .dot { width: 10px; height: 10px; box-shadow: none; }
+.person-body { padding: 2px 12px 8px; background: var(--surface-2); border-top: 1px solid var(--line); }
+.person-levels { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 12px; padding: 5px 0 3px; font-size: 0.8rem; color: var(--muted); }
+.person-level { display: inline-flex; align-items: center; gap: 5px; }
+.person-level .dot { width: 8px; height: 8px; box-shadow: none; }
 .person-overdue { font-weight: 600; color: var(--danger); }
-.person-tasks { list-style: none; padding: 3px 14px 6px; }
-.person-task { display: flex; align-items: center; gap: 11px; padding: 8px 0; border-bottom: 1px solid var(--line); }
-.person-task:last-child { border-bottom: 0; }
-.person-task .dot { width: 11px; height: 11px; }
-.person-task-main { flex: 1; min-width: 0; }
-.person-task-main .win-meta { display: block; }
-.person-none { padding: 10px 14px; }
+.person-tasks { list-style: none; }
+.person-task { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 0.86rem; border-top: 1px solid var(--line); }
+.person-task .dot { flex: none; align-self: center; width: 8px; height: 8px; box-shadow: none; }
+.person-task-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.person-task-main .win-meta { margin-left: 4px; font-size: 0.78rem; }
+.person-none { padding: 6px 0 0; }
+/* Too narrow for one line: the bar drops under the name and the numbers. */
+@media (max-width: 700px) {
+  .person-head { grid-template-columns: minmax(0, 1fr) auto; padding: 8px 12px; }
+  .person-figures { grid-column: 2; }
+  .load-bar { grid-column: 1 / -1; grid-row: 2; height: 4px; }
+  .person-task-main .win-meta { display: block; margin-left: 0; }
+}
 
 /* The calendar: people down the side, days across the top, as on the task sheet */
 .week-waiting {

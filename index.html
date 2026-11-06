@@ -196,7 +196,13 @@
         <h1 class="page-title">People</h1>
         <span id="people-summary" class="summary"></span>
       </div>
-      <p class="people-hint">Open tasks and subtasks for each person, with the heaviest urgent load first. Urgent means Critical or High. Something assigned to two people counts for both. Click a person to see their tasks.</p>
+      <p class="people-hint">
+        <span class="people-key"><i class="load-critical"></i>Critical</span>
+        <span class="people-key"><i class="load-high"></i>High</span>
+        <span class="people-key"><i class="load-normal"></i>Normal</span>
+        <span class="people-key"><i class="load-low"></i>Low</span>
+        <span>Open tasks and subtasks. Urgent is Critical or High.</span>
+      </p>
       <div id="people-cards" class="people-cards"></div>
     </main>
     <datalist id="people-list"></datalist>
