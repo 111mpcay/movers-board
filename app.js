@@ -1368,6 +1368,92 @@ function repeatField() {
   return field("Repeats", optionsSelect("repeat", REPEATS), el("span", { class: "hint", "data-repeat-note": true }));
 }
 
+// Where a task sits, to tell apart tasks with similar names: the task it's under, then its project.
+function taskPlace(task) {
+  const parent = task.parent_id && findTask(task.parent_id);
+  return [parent && `in ${parent.title}`, state.projects.find((p) => p.id === task.project_id)?.name].filter(Boolean).join(" · ");
+}
+
+// Every task in board order, each followed by its subtasks.
+function tasksInOrder() {
+  const projectOrder = new Map([...state.projects].sort((a, b) => a.position - b.position).map((p, i) => [p.id, i]));
+  return state.tasks.filter((t) => !t.parent_id)
+    .sort((a, b) => (projectOrder.get(a.project_id) ?? 0) - (projectOrder.get(b.project_id) ?? 0) || a.position - b.position)
+    .flatMap((t) => [t, ...subtasksOf(t.id)]);
+}
+
+// One task or subtask, found by typing part of its name. Once picked it shows as a tag
+// that can be taken off again.
+function taskPicker(taskId = null) {
+  const SHOWN = 8;
+  let current = findTask(taskId) ? taskId : null;
+  const box = textInput({ maxlength: "200", placeholder: "Search for a task by name", "aria-label": "Task to link", "data-task-search": true });
+  const list = el("ul", { class: "task-options", hidden: true });
+  const chosen = el("div", { class: "task-chosen", hidden: true });
+  const matches = () => {
+    const typed = box.value.trim().toLowerCase();
+    return tasksInOrder().filter((t) => t.title.toLowerCase().includes(typed));
+  };
+  const showOptions = () => {
+    const found = matches();
+    list.hidden = false;
+    list.replaceChildren(...[
+      ...found.slice(0, SHOWN).map((t) => el("li", {},
+        el("button", { class: "task-option", type: "button", "data-task-option": t.id },
+          t.title, el("span", { class: "win-meta" }, [taskPlace(t), STATUS[t.status]].filter(Boolean).join(" · "))))),
+      !found.length && el("li", { class: "task-options-note" }, "No task matches that."),
+      found.length > SHOWN && el("li", { class: "task-options-note" }, `${found.length - SHOWN} more. Type more of the name to narrow it down.`),
+    ].filter(Boolean));
+  };
+  const render = () => {
+    const task = findTask(current);
+    chosen.hidden = !task;
+    box.hidden = !!task;
+    if (task) list.hidden = true;
+    chosen.replaceChildren(...(task ? [
+      el("span", { class: "task-chosen-text" }, task.title, el("span", { class: "win-meta" }, taskPlace(task))),
+      el("button", { class: "name-tag-x", type: "button", "aria-label": `Unlink ${task.title}`, "data-task-clear": true }, "×"),
+    ] : []));
+  };
+  const pick = (id) => {
+    current = id;
+    box.value = "";
+    render();
+  };
+  box.addEventListener("focus", showOptions);
+  box.addEventListener("input", showOptions);
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault(); // Enter here picks a task. It doesn't send the form.
+      const first = matches()[0];
+      if (first) pick(first.id);
+    } else if (event.key === "Escape" && !list.hidden) {
+      event.stopPropagation(); // Esc here puts the list away, not the whole window
+      list.hidden = true;
+    }
+  });
+  // Some browsers don't move focus to a button that's clicked, which would put the list
+  // away before the click lands. Keeping focus in the box avoids that.
+  list.addEventListener("mousedown", (event) => event.preventDefault());
+  list.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-task-option]");
+    if (option) pick(option.dataset.taskOption);
+  });
+  chosen.addEventListener("click", (event) => {
+    if (!event.target.closest("[data-task-clear]")) return;
+    current = null;
+    render();
+    box.focus();
+  });
+  const root = el("div", { class: "task-picker" }, chosen, box, list);
+  root.addEventListener("focusout", (event) => {
+    if (!root.contains(event.relatedTarget)) list.hidden = true;
+  });
+  render();
+  // A task deleted while the form was open counts as no task.
+  return { root, value: () => (findTask(current) ? current : null) };
+}
+
 function taskFields(assignPicker) {
   return [
     field("Task", textInput({ maxlength: "200", "data-field": "title" })),
@@ -1977,6 +2063,7 @@ function renderCalendar() {
         title: m.title,
         time: formatTime(at),
         repeat: repeats(m) ? repeatPhrase(m.repeat, new Date(m.starts_at)) : null,
+        task: findTask(m.task_id)?.title ?? null,
         style: chipStyle(m, person.key),
       }))
       .filter((chip) => chip.style)),
@@ -2006,8 +2093,8 @@ function renderCalendar() {
           class: `week-chip${chip.style === "wait" ? " is-waiting" : ""}`,
           type: "button",
           "data-meeting": chip.id,
-          title: `${chip.time} ${chip.title}${chip.repeat ? ` (${chip.repeat})` : ""}`,
-          "aria-label": chip.repeat && `${chip.time} ${chip.title}, ${chip.repeat}`,
+          title: `${chip.time} ${chip.title}${chip.repeat ? ` (${chip.repeat})` : ""}${chip.task ? ` · Task: ${chip.task}` : ""}`,
+          "aria-label": (chip.repeat || chip.task) && [`${chip.time} ${chip.title}`, chip.repeat, chip.task && `for the task ${chip.task}`].filter(Boolean).join(", "),
         },
           el("span", { class: "week-chip-time" }, chip.time, chip.repeat && el("span", { class: "week-chip-repeat", "aria-hidden": "true" }, "↻")),
           chip.title)))))));
@@ -2070,6 +2157,7 @@ function buildMeetingWindow(w) {
       el("p", { class: "meeting-next", "data-meeting-next": true, hidden: true }),
       el("p", { class: "meeting-place", "data-meeting-place": true }),
       el("p", { class: "meeting-notes", "data-meeting-notes": true })),
+    el("div", { class: "meeting-task", "data-list": "task", hidden: true }),
     section("People",
       el("ul", { class: "win-list", "data-list": "people" }),
       el("form", { class: "win-form", "data-form": "add-person", novalidate: true },
@@ -2108,6 +2196,20 @@ function renderMeetingWindow(w) {
   notes.hidden = !m.notes;
   notes.textContent = m.notes;
 
+  // The task this meeting is for, as it stands now: where it is, its status and how far along.
+  const task = findTask(m.task_id);
+  const due = task && deadlineNote(task);
+  w.body.querySelector('[data-list="task"]').hidden = !task;
+  renderList(w, "task", task ? [task.id, task.title, taskPlace(task), task.status, task.progress, due] : null, () => (task ? [
+    el("span", { class: "meeting-task-label" }, task.parent_id ? "For the subtask" : "For the task"),
+    el("button", { class: "link-btn meeting-task-name", type: "button", "data-open-task": task.id }, task.title),
+    el("span", { class: "win-meta" }, [taskPlace(task), STATUS[task.status]].filter(Boolean).join(" · "),
+      due && " · ", due && el("span", { class: `due-note due-${due.tone}` }, due.text)),
+    el("span", { class: "project-progress" },
+      el("span", { class: "project-bar" }, el("i", { style: `width: ${task.progress}%` })),
+      el("span", { class: "project-percent" }, `${task.progress}%`)),
+  ] : []));
+
   const organizer = isOrganizer(m);
   const mine = myInvite(m);
   const you = (name) => (personKey(name) === personKey(state.name) ? `${name} (you)` : name);
@@ -2138,6 +2240,8 @@ function onMeetingClick(w, event) {
   const target = event.target;
   const answer = target.closest("[data-answer]");
   if (answer) return answerMeeting(w, answer);
+  const task = target.closest("[data-open-task]");
+  if (task) return openTask(task.dataset.openTask);
   const remove = target.closest("[data-remove-person]");
   if (remove) return removeMeetingPerson(w, remove);
   if (target.closest("[data-edit-meeting]")) return openMeetingForm({ meeting: findMeeting(w.meetingId) });
@@ -2207,7 +2311,7 @@ function openMeetingForm({ meeting = null, day = null, person = null } = {}) {
   let w = state.windows.get(key);
   if (!w) {
     w = createWindow(key, meeting ? `Edit: ${meeting.title}` : "Set meeting");
-    w.height = Math.min(w.height, meeting ? 590 : 730);
+    w.height = Math.min(w.height, meeting ? 690 : 830);
     placeWindow(w);
     if (meeting) {
       w.meetingId = meeting.id;
@@ -2226,6 +2330,7 @@ function openMeetingForm({ meeting = null, day = null, person = null } = {}) {
 
 function buildMeetingForm(w, meeting) {
   if (!meeting) w.invitePicker = namePicker({ label: "People to invite", skip: state.name });
+  w.taskPicker = taskPicker(meeting?.task_id);
   const form = el("form", { class: "win-body", novalidate: true },
     field("Title", textInput({ maxlength: "200", "data-input": "title" })),
     field("Date", el("input", { class: "input", type: "date", "data-input": "date" })),
@@ -2237,6 +2342,10 @@ function buildMeetingForm(w, meeting) {
       el("span", { class: "hint", "data-repeat-note": true })),
     field("Place or link", textInput({ maxlength: "500", "data-input": "place" })),
     field("Notes", el("textarea", { class: "input", rows: "2", maxlength: "4000", "data-input": "notes" })),
+    el("div", { class: "field" },
+      el("span", { class: "label" }, "Linked task"),
+      w.taskPicker.root,
+      el("p", { class: "hint" }, "Optional. The meeting will show this task and how far along it is.")),
     !meeting && el("div", { class: "field" },
       el("span", { class: "label" }, "People to invite"),
       w.invitePicker.root,
@@ -2300,6 +2409,7 @@ async function submitMeetingForm(w, meeting, event) {
     place: value("place"),
     notes: value("notes"),
     repeat: value("repeat"),
+    task_id: w.taskPicker.value(),
   };
   if (!meeting) fields.people = w.invitePicker.names();
   const button = form.querySelector('button[type="submit"]');

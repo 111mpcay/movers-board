@@ -821,6 +821,23 @@ body::before {
 .btn-decline { color: var(--danger); background: transparent; border-color: var(--danger); }
 .btn-decline:hover:not(:disabled) { background: var(--danger-bg); }
 
+/* The task a meeting is for, with how far along it is */
+.meeting-task { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: var(--surface-2); border-left: 3px solid var(--orange); border-radius: 6px; }
+.meeting-task-label { font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.meeting-task-name { font-weight: 700; }
+.meeting-task .project-progress { margin-top: 4px; }
+
+/* Picking that task when setting the meeting */
+.task-picker { width: 100%; min-width: 0; }
+.task-chosen { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; }
+.task-chosen-text { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.task-chosen-text .win-meta, .task-option .win-meta { display: block; font-weight: 400; }
+.task-options { list-style: none; margin-top: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.task-option { display: block; width: 100%; min-height: 40px; padding: 7px 12px; text-align: left; font-weight: 600; overflow-wrap: anywhere; color: inherit; background: none; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+.task-options li:last-child .task-option { border-bottom: 0; }
+.task-option:hover, .task-option:focus-visible { background: var(--surface-2); }
+.task-options-note { padding: 8px 12px; font-size: 0.85rem; color: var(--muted); }
+
 /* Names as removable tags, with a box to add more */
 .name-picker { width: 100%; min-width: 0; }
 .name-tags { list-style: none; display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
