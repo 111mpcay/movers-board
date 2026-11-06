@@ -28,7 +28,7 @@ const OPENS_IN_BROWSER = /^(image\/(png|jpeg|gif|webp)|application\/pdf|text\/pl
 const WANTS_DEMO = location.hostname === "localhost" && new URLSearchParams(location.search).has("demo");
 const SESSION_KEY = WANTS_DEMO ? "board.session.demo" : "board.session";
 const NAME_KEY = "board.lastName";
-const ONLY_MINE_KEY = "board.onlyMine";
+const FILTER_KEY = "board.assigneeFilter";
 
 const state = {
   store: null,
@@ -36,7 +36,7 @@ const state = {
   projectId: null, // the project whose page is showing; null on the cards screen
   leavingProject: null, // a project this person is deleting, so its page goes quietly
   tasks: [],
-  onlyMine: readStorage("localStorage", ONLY_MINE_KEY) === "1",
+  filter: readFilter(), // the people whose tasks show, as name keys; "" is unassigned, and empty shows everyone
   keepShown: new Set(), // tasks just added, which stay in view under the filter until it's next changed
   meetings: [],
   weekStart: startOfWeek(new Date()), // the Monday of the week the calendar is showing
@@ -73,6 +73,15 @@ function el(tag, attrs = {}, ...children) {
   }
   node.append(...children.filter((c) => c != null && c !== false));
   return node;
+}
+
+function readFilter() {
+  try {
+    const saved = JSON.parse(readStorage("localStorage", FILTER_KEY));
+    return Array.isArray(saved) ? saved.filter((key) => typeof key === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 function readStorage(area, key) {
@@ -348,6 +357,7 @@ function showGate(message) {
   writeStorage("sessionStorage", SESSION_KEY, null);
   closeAllWindows();
   closeNotifications();
+  setFilterOpen(false);
   document.title = "Movers Board";
   state.projects = [];
   state.projectId = null;
@@ -382,6 +392,14 @@ async function startBoard(token, name) {
   $("demo-note").hidden = !state.store.isDemo;
   $("gate").hidden = true;
   $("board-view").hidden = false;
+  // The "Assigned to me" switch this replaced is carried over as a filter on this person.
+  if (readStorage("localStorage", "board.onlyMine") === "1") {
+    writeStorage("localStorage", "board.onlyMine", null);
+    if (!state.filter.length) {
+      state.filter = [personKey(name)];
+      writeStorage("localStorage", FILTER_KEY, JSON.stringify(state.filter));
+    }
+  }
   await rollTasks();
   await refresh();
   startPolling();
@@ -492,6 +510,7 @@ function setRenaming(on) {
 
 window.addEventListener("hashchange", () => {
   state.windowEntryHref = history.state?.boardWindow ? location.href : null;
+  setFilterOpen(false);
   if (!$("gate").hidden) return;
   showProjectError("project-error", null);
   setRenaming(false);
@@ -696,10 +715,71 @@ function renderPeople() {
   $("people-list").replaceChildren(...[...names].sort().map((name) => el("option", { value: name })));
 }
 
-// Yours if you're on it, or on one of its subtasks, which you'd otherwise have no way to reach.
-function isMine(task) {
-  const onIt = (t) => t.assignees.some((name) => personKey(name) === personKey(state.name));
-  return onIt(task) || subtasksOf(task.id).some(onIt);
+// Everyone the given names cover, each once, with this person first.
+function peopleFrom(names) {
+  const found = new Map();
+  for (const name of [state.name, ...names]) {
+    const key = personKey(name);
+    if (key && !found.has(key)) found.set(key, name.trim());
+  }
+  const me = personKey(state.name);
+  return [...found].map(([key, name]) => ({ key, name }))
+    .sort((a, b) => (b.key === me) - (a.key === me) || a.name.localeCompare(b.name));
+}
+
+// Whether a task is on the filtered list: one of the chosen people is on it, or on one of
+// its subtasks, which they'd otherwise have no way to reach. "" stands for nobody assigned.
+function matchesFilter(task, keys) {
+  const onIt = (t) => t.assignees.some((name) => keys.includes(personKey(name)));
+  return (keys.includes("") && !task.assignees.length) || onIt(task) || subtasksOf(task.id).some(onIt);
+}
+
+function setFilter(keys) {
+  state.filter = keys;
+  writeStorage("localStorage", FILTER_KEY, keys.length ? JSON.stringify(keys) : null);
+  state.keepShown.clear();
+  renderRows();
+}
+
+function setFilterOpen(open) {
+  $("filter-panel").hidden = !open;
+  $("filter-btn").setAttribute("aria-expanded", String(open));
+}
+
+// The dropdown's button and its list: a checkbox for each person, then Unassigned, each
+// with how many of this project's tasks it would show.
+function renderFilter(inProject) {
+  const me = personKey(state.name);
+  const options = peopleFrom([...state.people, ...state.tasks.flatMap((t) => t.assignees)])
+    .map((p) => ({ ...p, label: p.key === me ? `${p.name} (you)` : p.name, short: p.key === me ? "Me" : p.name }));
+  options.push({ key: "", label: "Unassigned", short: "Unassigned" });
+  // Someone still ticked who has since left the board stays listed, so they can be unticked.
+  for (const key of state.filter) {
+    if (!options.some((o) => o.key === key)) options.push({ key, name: key, label: key, short: key });
+  }
+  const chosen = options.filter((o) => state.filter.includes(o.key));
+  const summary = !chosen.length ? "Everyone" : chosen.length > 2 ? `${chosen.length} selected` : chosen.map((o) => o.short).join(", ");
+  $("filter-btn").textContent = `Assigned to: ${summary}`;
+  $("filter-btn").classList.toggle("is-active", chosen.length > 0);
+  $("filter-clear").hidden = !chosen.length;
+
+  const rows = options.map((o) => [o.key, o.label, inProject.filter((t) => matchesFilter(t, [o.key])).length]);
+  const list = $("filter-list");
+  const signature = JSON.stringify(rows);
+  if (list.dataset.sig !== signature) {
+    // Rebuilding would otherwise drop the keyboard's place in the list.
+    const focused = list.contains(document.activeElement) ? document.activeElement.value : null;
+    list.dataset.sig = signature;
+    list.replaceChildren(...options.map((o, i) => el("li", {},
+      el("label", { class: "filter-option" },
+        el("input", { type: "checkbox", value: o.key }),
+        o.key === ""
+          ? el("span", { class: "filter-none" }, o.label)
+          : el("span", { class: "name-tag", style: personColorStyle(personColor(o.name)), "data-person": o.name }, o.label),
+        el("span", { class: "filter-count" }, String(rows[i][2]))))));
+    if (focused !== null) [...list.querySelectorAll("input")].find((box) => box.value === focused)?.focus();
+  }
+  for (const box of list.querySelectorAll("input")) box.checked = state.filter.includes(box.value);
 }
 
 // A task someone just added stays on screen even if the filter would hide it.
@@ -715,10 +795,9 @@ function renderRows() {
   const focused = document.activeElement;
   const activeRow = focused?.closest?.(".task-row") || null;
   const inProject = state.tasks.filter((t) => !t.parent_id && t.project_id === state.projectId).sort((a, b) => a.position - b.position);
-  const tasks = state.onlyMine ? inProject.filter((t) => isMine(t) || state.keepShown.has(t.id)) : inProject;
-  $("only-mine").textContent = `Assigned to me (${inProject.filter(isMine).length})`;
-  $("only-mine").setAttribute("aria-pressed", String(state.onlyMine));
-  list.classList.toggle("is-filtered", state.onlyMine);
+  const tasks = state.filter.length ? inProject.filter((t) => matchesFilter(t, state.filter) || state.keepShown.has(t.id)) : inProject;
+  renderFilter(inProject);
+  list.classList.toggle("is-filtered", state.filter.length > 0);
   const existing = new Map([...list.children].map((row) => [row.dataset.id, row]));
   const wanted = new Set(tasks.map((t) => t.id));
   existing.forEach((row, id) => { if (!wanted.has(id)) row.remove(); });
@@ -819,11 +898,16 @@ rows.addEventListener("change", (event) => {
 
 rows.addEventListener("input", previewProgress);
 
-$("only-mine").addEventListener("click", () => {
-  state.onlyMine = !state.onlyMine;
-  writeStorage("localStorage", ONLY_MINE_KEY, state.onlyMine ? "1" : null);
-  state.keepShown.clear();
-  renderRows();
+$("filter-btn").addEventListener("click", () => setFilterOpen($("filter-panel").hidden));
+
+$("filter-list").addEventListener("change", (event) => {
+  const key = event.target.value;
+  setFilter(event.target.checked ? [...state.filter, key] : state.filter.filter((other) => other !== key));
+});
+
+$("filter-clear").addEventListener("click", () => {
+  setFilter([]);
+  $("filter-btn").focus();
 });
 
 rows.addEventListener("click", (event) => {
@@ -1780,20 +1864,7 @@ const byStart = (a, b) => new Date(a.starts_at) - new Date(b.starts_at);
 
 // Everyone the board knows about, with this person first.
 function calendarPeople() {
-  const names = new Map();
-  const add = (name) => {
-    const key = personKey(name);
-    if (key && !names.has(key)) names.set(key, name.trim());
-  };
-  add(state.name);
-  state.people.forEach(add);
-  for (const m of state.meetings) {
-    add(m.created_by);
-    m.people.forEach((p) => add(p.name));
-  }
-  const me = personKey(state.name);
-  return [...names].map(([key, name]) => ({ key, name }))
-    .sort((a, b) => (b.key === me) - (a.key === me) || a.name.localeCompare(b.name));
+  return peopleFrom([...state.people, ...state.meetings.flatMap((m) => [m.created_by, ...m.people.map((p) => p.name)])]);
 }
 
 // How a meeting shows on one person's row: solid once they're going, dashed while it's
@@ -2156,6 +2227,17 @@ function notificationLines(n) {
     return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, n.action === "changed" ? `now ${when}` : when]];
   }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
+  if (n.action === "edited" || n.action === "noted") {
+    // Changes by the same person fold into one notice: the latest, and a count of the rest.
+    const posted = n.action === "noted";
+    const text = String(n.detail || "");
+    const more = n.earlier_changes ? ` (and ${n.earlier_changes} earlier ${posted ? "update" : "change"}${n.earlier_changes === 1 ? "" : "s"})` : "";
+    return [
+      posted ? `${n.by_name} posted an update on your ${n.kind}` : `${n.by_name} edited your ${n.kind}`,
+      where,
+      `${posted ? `“${text}”` : text.charAt(0).toUpperCase() + text.slice(1)}${more}`,
+    ];
+  }
   if (n.action === "due") {
     const due = daysUntil(n.due_on) === 0 ? "is due today" : `was due ${formatDay(parseDate(n.due_on))}`;
     return [`Reminder: your ${n.kind} ${due}`, where];
@@ -2178,14 +2260,15 @@ function renderNotifications() {
   $("notify-read-all").hidden = !unread;
   $("notify-list").replaceChildren(...(state.notifications.length
     ? state.notifications.map((n) => {
-      const [headline, details] = notificationLines(n);
+      const [headline, details, change] = notificationLines(n);
       return el("li", {},
         el("button", { class: `notify-item${n.read_at ? "" : " is-unread"}`, type: "button", "data-notification": n.id, "data-task": n.task_id, "data-open-meeting": n.meeting_id },
           headline,
           el("span", { class: "notify-task" }, details.filter(Boolean).join(" · ")),
+          change && el("span", { class: "notify-task notify-change" }, change),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, meeting invites, reminders for tasks that are due, and deletions of things you created show up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, meeting invites, reminders for tasks that are due, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {
@@ -2236,12 +2319,18 @@ $("notify-list").addEventListener("click", (event) => {
 
 document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".notify")) closeNotifications();
+  if (!event.target.closest(".task-filter")) setFilterOpen(false);
 });
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && !$("notify-panel").hidden) {
+  if (event.key !== "Escape") return;
+  if (!$("notify-panel").hidden) {
     closeNotifications();
     $("notify-btn").focus();
+  }
+  if (!$("filter-panel").hidden) {
+    setFilterOpen(false);
+    $("filter-btn").focus();
   }
 });
 

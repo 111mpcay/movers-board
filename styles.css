@@ -366,9 +366,36 @@ body::before {
   background: var(--surface);
   border-inline: 1px solid var(--line);
 }
-.task-rows.is-filtered:empty::before { content: "Nothing in this project is assigned to you."; }
-.task-filter { margin-bottom: 12px; }
-#only-mine[aria-pressed="true"] { color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
+.task-rows.is-filtered:empty::before { content: "No tasks in this project match this filter."; }
+
+/* The assignee filter: a button, and a list of people to tick that drops down from it.
+   The list hangs from the button's left edge, which is always at the page's left. */
+.task-filter { position: relative; width: fit-content; max-width: 100%; margin-bottom: 12px; }
+#filter-btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+#filter-btn::after { content: " \25BE"; }
+#filter-btn.is-active { color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
+.filter-panel {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 6px);
+  z-index: 4;
+  width: min(290px, calc(100vw - 32px));
+  max-height: min(380px, 60vh);
+  overflow: auto;
+  padding: 6px 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lift);
+}
+.filter-list { list-style: none; }
+.filter-option { display: flex; align-items: center; gap: 9px; min-height: 40px; padding: 4px 12px; cursor: pointer; }
+.filter-option:hover { background: var(--surface-2); }
+.filter-option input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--orange); cursor: pointer; }
+.filter-option .name-tag { padding: 2px 10px; }
+.filter-none { color: var(--muted); }
+.filter-count { margin-left: auto; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+#filter-clear { margin: 6px 12px 4px; font-size: 0.88rem; }
 
 .task-row, .quick-add {
   position: relative;
@@ -896,6 +923,7 @@ body::before {
 .notify-item:hover { background: var(--surface-2); }
 .notify-item.is-unread { box-shadow: inset 3px 0 0 var(--orange); font-weight: 600; }
 .notify-task, .notify-time { display: block; font-weight: 400; font-size: 0.85rem; color: var(--muted); overflow-wrap: anywhere; }
+.notify-change { color: var(--ink); }
 .notify-empty { padding: 16px 14px; color: var(--muted); font-size: 0.9rem; }
 
 .link-btn {

@@ -121,7 +121,11 @@
       </div>
       <p id="project-error" class="form-error" role="alert" hidden></p>
       <div class="task-filter">
-        <button id="only-mine" class="btn btn-quiet btn-small" type="button" aria-pressed="false">Assigned to me</button>
+        <button id="filter-btn" class="btn btn-quiet btn-small" type="button" aria-expanded="false" aria-controls="filter-panel">Assigned to: Everyone</button>
+        <div id="filter-panel" class="filter-panel" role="group" aria-label="Show tasks assigned to" hidden>
+          <ul id="filter-list" class="filter-list"></ul>
+          <button id="filter-clear" class="link-btn" type="button" hidden>Show everyone</button>
+        </div>
       </div>
       <div class="sheet" role="table" aria-label="Task list">
         <div class="sheet-head" role="row">
