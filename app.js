@@ -2,6 +2,8 @@
 
 const STATUS = { todo: "To do", doing: "In progress", done: "Done" };
 const URGENCY = { low: "Low", normal: "Normal", high: "High", critical: "Critical" };
+const REPEATS = { none: "One time", weekly: "Weekly", monthly: "Monthly" };
+const ROLL_MS = 10 * 60000; // how often an open page asks the board to check for reminders
 // Picked by eye rather than spaced evenly, since evenly spaced hues mostly look green.
 const PERSON_HUES = [0, 25, 42, 56, 80, 125, 165, 188, 205, 222, 245, 268, 288, 310, 330, 347];
 const PERSON_COLOR_COUNT = PERSON_HUES.length;
@@ -49,6 +51,8 @@ const state = {
   lastDrop: 0,
   writes: 0, // bumps on every change so a slower, older read can't undo it
   pollTimer: null,
+  lastRoll: 0, // when this page last asked the board to check for reminders
+  rolledDay: "", // and which day that was, so it asks again when the date changes
   windowEntryHref: history.state?.boardWindow ? location.href : null, // this history entry's address, if it was added for a phone's window
   notifyHasEntry: false, // whether the open notifications list has its own history entry
   windows: new Map(),
@@ -116,6 +120,23 @@ const dayKey = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${p
 const clockValue = (date) => `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 const formatDay = (date) => date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 const formatTime = (date) => date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+const repeats = (task) => !!task.repeat && task.repeat !== "none";
+
+// A week or a month from today, for a task set to repeat before it has a deadline.
+function firstDeadline(repeat) {
+  const now = new Date();
+  if (repeat === "weekly") return dayKey(addDays(now, 7));
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 2, 0).getDate();
+  return dayKey(new Date(now.getFullYear(), now.getMonth() + 1, Math.min(now.getDate(), lastDay)));
+}
+
+// What a repeating task will do next, in a line under its Repeats choice.
+function repeatNote(task) {
+  if (!repeats(task)) return "";
+  if (task.status !== "done") return `Reopens each ${task.repeat === "weekly" ? "week" : "month"} once it's done and its deadline has passed.`;
+  return `Done for this round. It reopens ${task.deadline && daysUntil(task.deadline) < 0 ? "tomorrow" : "the day after its deadline"}.`;
+}
+
 const personKey = (name) => String(name || "").trim().toLowerCase();
 const splitNames = (text) => String(text || "").split(",").map((name) => name.trim().slice(0, 60)).filter(Boolean);
 function formatSize(bytes) {
@@ -213,6 +234,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     addLink: (taskId, title, url) => rpc("movers_add_link", { p_token: token, p_task_id: taskId, p_title: title, p_url: url }),
     removeAttachment: (id) => rpc("movers_remove_attachment", { p_token: token, p_id: id }),
     markRead: (ids) => rpc("movers_mark_notifications_read", { p_token: token, p_ids: ids }),
+    rollTasks: (offsetMinutes) => rpc("movers_roll_tasks", { p_token: token, p_offset_minutes: offsetMinutes }),
     saveMeeting: (id, fields) => rpc("movers_save_meeting", { p_token: token, p_id: id, p_fields: fields }),
     answerMeeting: (id, answer) => rpc("movers_answer_meeting", { p_token: token, p_id: id, p_answer: answer }),
     addMeetingPerson: (id, name) => rpc("movers_add_meeting_person", { p_token: token, p_id: id, p_name: name }),
@@ -360,9 +382,23 @@ async function startBoard(token, name) {
   $("demo-note").hidden = !state.store.isDemo;
   $("gate").hidden = true;
   $("board-view").hidden = false;
+  await rollTasks();
   await refresh();
   startPolling();
 }
+
+// Has the board reopen finished repeating tasks and send due-day reminders. Nothing does
+// that on a timer, so every open page asks now and then. It sends how far its clock is
+// from UTC, so the board's "today" starts at the team's midnight.
+async function rollTasks() {
+  state.lastRoll = Date.now();
+  state.rolledDay = dayKey(new Date());
+  try {
+    await state.store.rollTasks(-new Date().getTimezoneOffset());
+  } catch { /* the next try comes soon enough */ }
+}
+
+const rollIsDue = () => dayKey(new Date()) !== state.rolledDay || Date.now() - state.lastRoll > ROLL_MS;
 
 $("leave-btn").addEventListener("click", () => {
   history.replaceState(null, "", location.pathname + location.search);
@@ -571,7 +607,7 @@ function subtaskSummary(task) {
 
 function rowSignature(task) {
   return JSON.stringify([
-    task.title, task.assignees, task.urgency, task.deadline, task.status, task.progress,
+    task.title, task.assignees, task.urgency, task.deadline, task.repeat, task.status, task.progress,
     task.updated_by, timeAgo(task.updated_at), deadlineNote(task)?.text, subtaskSummary(task),
   ]);
 }
@@ -611,11 +647,12 @@ function renderRow(task) {
       el("span", { class: "grip", "aria-hidden": "true" }),
       el("div", { class: "task-text" },
         el("button", { class: "task-title", type: "button" }, task.title),
-        el("div", { class: "task-meta" }, `${task.updated_by} · ${timeAgo(task.updated_at)}${subtaskSummary(task)}`)),
+        el("div", { class: "task-meta" }, `${task.updated_by} · ${timeAgo(task.updated_at)}${subtaskSummary(task)}${repeats(task) ? ` · Repeats ${task.repeat}` : ""}`)),
       // Only shows on phones, in place of the columns.
-      el("div", { class: "task-glance", role: "img", "aria-label": `Urgency ${URGENCY[task.urgency]}, status ${STATUS[task.status]}, progress ${task.progress}%` },
+      el("div", { class: "task-glance", role: "img", "aria-label": `Urgency ${URGENCY[task.urgency]}, status ${STATUS[task.status]}, progress ${task.progress}%${repeats(task) ? `, repeats ${task.repeat}` : ""}` },
         el("span", { class: "task-glance-line" }, el("span", { class: `dot dot-${task.urgency}` }), STATUS[task.status]),
-        el("span", { class: "task-glance-line" }, el("span", { class: "task-glance-bar" }, el("i", { style: `width: ${task.progress}%` })), `${task.progress}%`))),
+        el("span", { class: "task-glance-line" }, el("span", { class: "task-glance-bar" }, el("i", { style: `width: ${task.progress}%` })), `${task.progress}%`),
+        repeats(task) && el("span", { class: "task-glance-line" }, `↻ ${REPEATS[task.repeat]}`))),
     cell("Assign", rowPicker(task)),
     cell("Urgency", dotSelect("urgency", task.urgency, URGENCY, `Urgency of ${task.title}`)),
     cell("Deadline",
@@ -728,6 +765,23 @@ function refreshRow(id, focusField) {
 async function updateTask(id, changes, focusField) {
   const task = findTask(id);
   if (!task) return;
+  // A repeating task needs a deadline to repeat from.
+  if (repeats({ repeat: changes.repeat ?? task.repeat }) && !("deadline" in changes ? changes.deadline : task.deadline)) {
+    if ("repeat" in changes) {
+      changes = { ...changes, deadline: firstDeadline(changes.repeat) };
+    } else {
+      const message = "A repeating task needs a deadline. To remove it, set Repeats to One time first.";
+      const w = state.windows.get(id);
+      if (w) {
+        showWindowError(w, message);
+        w.body.querySelector('[data-field="deadline"]').value = task.deadline;
+      } else {
+        showSyncNote(message);
+      }
+      refreshRow(id);
+      return;
+    }
+  }
   const diff = onlyChanged(task, linkStatusAndProgress(task, changes));
   if (!Object.keys(diff).length) return;
 
@@ -947,13 +1001,19 @@ function stopPolling() {
 }
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && state.pollTimer) refresh();
+  if (document.hidden || !state.pollTimer) return;
+  if (rollIsDue()) rollTasks().then(refresh);
+  else refresh();
 });
 
-// Keeps "5 min ago" and "Due today" correct on a list left open.
-setInterval(() => {
-  if (state.pollTimer && !state.dragging && !document.hidden) renderBoard();
-}, 60000);
+// Keeps "5 min ago" and "Due today" correct on a list left open, and has the board check
+// for reminders when the day changes or it's been a while.
+function everyMinute() {
+  if (!state.pollTimer || document.hidden) return;
+  if (rollIsDue()) rollTasks().then(refresh);
+  if (!state.dragging) renderBoard();
+}
+setInterval(everyMinute, 60000);
 
 // ---------- Floating windows ----------
 
@@ -1211,6 +1271,10 @@ function namePicker({ label, names = [], placeholder = "Add a name", title = nul
   };
 }
 
+function repeatField() {
+  return field("Repeats", optionsSelect("repeat", REPEATS), el("span", { class: "hint", "data-repeat-note": true }));
+}
+
 function taskFields(assignPicker) {
   return [
     field("Task", textInput({ maxlength: "200", "data-field": "title" })),
@@ -1247,7 +1311,9 @@ function buildTaskWindow(w, task) {
   const parts = [
     isSubtask && el("p", { class: "win-parent" }, "Part of ", el("button", { class: "link-btn", type: "button", "data-open-task": task.parent_id }, "")),
     ...taskFields(w.assignPicker),
-    !isSubtask && field("Project", el("select", { class: "input", "data-field": "project_id" })),
+    !isSubtask && el("div", { class: "field-row" },
+      repeatField(),
+      field("Project", el("select", { class: "input", "data-field": "project_id" }))),
     field("Progress", el("div", { class: "progress-wrap progress-wrap-large" },
       el("output", { class: "progress-label" }, "0%"),
       el("input", { class: "progress-range", type: "range", min: "0", max: "100", step: "5", "data-field": "progress" }))),
@@ -1337,6 +1403,9 @@ function renderTaskWindow(w) {
   for (const name of ["title", "details", "deadline", "urgency", "status", "project_id"]) {
     setFieldValue(w, name, task[name]);
   }
+  setFieldValue(w, "repeat", task.repeat || "none");
+  const repeatNoteEl = w.body.querySelector("[data-repeat-note]");
+  if (repeatNoteEl) repeatNoteEl.textContent = repeatNote(task);
   w.assignPicker.set(task.assignees);
   const range = w.body.querySelector('[data-field="progress"]');
   if (range !== document.activeElement) {
@@ -1647,8 +1716,19 @@ function openNewTask() {
     el("div", { class: "win-new-actions" }, el("button", { class: "btn btn-primary", type: "submit" }, "Add task")));
   w.body.replaceWith(form);
   w.body = form;
-  w.body.querySelector('[data-field="status"]').closest(".field").remove();
+  // A new task always starts as To do, so its Status gives way to how often it repeats.
+  w.body.querySelector('[data-field="status"]').closest(".field").replaceWith(repeatField());
   w.body.querySelector('[data-field="urgency"]').value = "normal";
+  const repeat = form.querySelector('[data-field="repeat"]');
+  const deadline = form.querySelector('[data-field="deadline"]');
+  let filled = null; // a deadline this form put in itself, which it can still move or take out
+  repeat.addEventListener("change", () => {
+    if (!deadline.value || deadline.value === filled) {
+      filled = repeat.value === "none" ? null : firstDeadline(repeat.value);
+      deadline.value = filled ?? "";
+    }
+    form.querySelector("[data-repeat-note]").textContent = repeatNote({ repeat: repeat.value });
+  });
   form.addEventListener("submit", (event) => submitNewTask(w, event));
   showWindow(w);
   w.body.querySelector('[data-field="title"]').focus();
@@ -1668,8 +1748,9 @@ async function submitNewTask(w, event) {
     project_id: state.projectId,
     details: value("details"),
     assignees: w.assignPicker.names(),
-    deadline: value("deadline"),
+    deadline: value("deadline") || (value("repeat") === "none" ? null : firstDeadline(value("repeat"))),
     urgency: value("urgency"),
+    repeat: value("repeat"),
   };
   const button = w.body.querySelector('button[type="submit"]');
   button.disabled = true;
@@ -2075,6 +2156,14 @@ function notificationLines(n) {
     return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, n.action === "changed" ? `now ${when}` : when]];
   }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
+  if (n.action === "due") {
+    const due = daysUntil(n.due_on) === 0 ? "is due today" : `was due ${formatDay(parseDate(n.due_on))}`;
+    return [`Reminder: your ${n.kind} ${due}`, where];
+  }
+  if (n.action === "reopened") {
+    const task = findTask(n.task_id);
+    return [`Reminder: your ${task && repeats(task) ? task.repeat : "repeating"} task is open again`, [n.title, `due ${formatDay(parseDate(n.due_on))}`, n.project_name]];
+  }
   if (n.action !== "deleted") return [`${n.by_name} assigned you a ${n.kind}`, where];
   if (!n.inside_count) return [`${n.by_name} deleted your ${n.kind}`, where];
   const yours = n.inside_count === 1 ? "1 item" : `${n.inside_count} items`;
@@ -2096,7 +2185,7 @@ function renderNotifications() {
           el("span", { class: "notify-task" }, details.filter(Boolean).join(" · ")),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. When someone assigns you a task, invites you to a meeting, or deletes something you created, it shows up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, meeting invites, reminders for tasks that are due, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {
