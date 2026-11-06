@@ -4,6 +4,7 @@ const STATUS = { todo: "To do", doing: "In progress", done: "Done" };
 const URGENCY = { low: "Low", normal: "Normal", high: "High", critical: "Critical" };
 const REPEATS = { none: "One time", weekly: "Weekly", monthly: "Monthly" };
 const ROLL_MS = 10 * 60000; // how often an open page asks the board to check for reminders
+const HOUR_MS = 60 * 60000; // how long before a meeting its reminder goes out
 // Picked by eye rather than spaced evenly, since evenly spaced hues mostly look green.
 const PERSON_HUES = [0, 25, 42, 56, 80, 125, 165, 188, 205, 222, 245, 268, 288, 310, 330, 347];
 const PERSON_COLOR_COUNT = PERSON_HUES.length;
@@ -405,9 +406,10 @@ async function startBoard(token, name) {
   startPolling();
 }
 
-// Has the board reopen finished repeating tasks and send due-day reminders. Nothing does
-// that on a timer, so every open page asks now and then. It sends how far its clock is
-// from UTC, so the board's "today" starts at the team's midnight.
+// Has the board reopen finished repeating tasks, send due-day reminders, and send the
+// reminders for meetings starting within the hour. Nothing does that on a timer, so every
+// open page asks now and then. It sends how far its clock is from UTC, so the board's
+// "today" starts at the team's midnight.
 async function rollTasks() {
   state.lastRoll = Date.now();
   state.rolledDay = dayKey(new Date());
@@ -416,7 +418,14 @@ async function rollTasks() {
   } catch { /* the next try comes soon enough */ }
 }
 
-const rollIsDue = () => dayKey(new Date()) !== state.rolledDay || Date.now() - state.lastRoll > ROLL_MS;
+// A meeting on this page has come within the hour since the board was last asked, so its
+// reminder is waiting to go out.
+const reminderIsDue = () => state.meetings.some((m) => {
+  const start = nextOccurrence(m).getTime();
+  return start > Date.now() && start - HOUR_MS <= Date.now() && state.lastRoll < start - HOUR_MS;
+});
+
+const rollIsDue = () => dayKey(new Date()) !== state.rolledDay || Date.now() - state.lastRoll > ROLL_MS || reminderIsDue();
 
 $("leave-btn").addEventListener("click", () => {
   history.replaceState(null, "", location.pathname + location.search);
@@ -1091,7 +1100,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 // Keeps "5 min ago" and "Due today" correct on a list left open, and has the board check
-// for reminders when the day changes or it's been a while.
+// for reminders when the day changes, a meeting comes within the hour, or it's been a while.
 function everyMinute() {
   if (!state.pollTimer || document.hidden) return;
   if (rollIsDue()) rollTasks().then(refresh);
@@ -2316,6 +2325,11 @@ async function submitMeetingForm(w, meeting, event) {
 
 // A notification's two lines: what happened, then which item it's about.
 function notificationLines(n) {
+  if (n.action === "starting") {
+    // A reminder is for one date, so it gives that day even when the meeting repeats.
+    const start = new Date(n.starts_at);
+    return [`Reminder: your meeting ${start > new Date() ? "starts" : "was"} at ${formatTime(start)}`, [n.title, formatDay(start)]];
+  }
   if (n.kind === "meeting") {
     const when = meetingWhen(n.repeat, n.starts_at);
     return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, n.action === "changed" ? `now ${when}` : when]];
@@ -2362,7 +2376,7 @@ function renderNotifications() {
           change && el("span", { class: "notify-task notify-change" }, change),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, meeting invites, reminders for tasks that are due, and deletions of things you created show up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {
