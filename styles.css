@@ -682,6 +682,44 @@ body::before {
 .topnav-link:hover { color: var(--ink); }
 .topnav-link.is-current { color: var(--ink); border-bottom-color: var(--orange); }
 
+/* People: who has what, and how much of it is urgent */
+.people-hint { max-width: 760px; margin: -6px 0 14px; font-size: 0.88rem; color: var(--muted); }
+.people-cards { display: grid; gap: 10px; max-width: 900px; }
+.person-card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.person-card.is-unassigned { border-style: dashed; }
+.person-head { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 9px 14px; padding: 12px 14px; cursor: pointer; list-style: none; }
+.person-head::-webkit-details-marker { display: none; }
+.person-head:hover { background: var(--surface-2); }
+.person-card[open] > .person-head { border-bottom: 1px solid var(--line); }
+.person-name { justify-self: start; padding: 3px 12px; font-size: 0.95rem; font-weight: 600; }
+.person-nobody { padding-left: 0; color: var(--muted); }
+.person-figures { display: flex; align-items: baseline; gap: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.person-urgent { color: var(--muted); }
+.person-urgent.has-urgent { font-weight: 700; color: var(--danger); }
+.person-open { font-weight: 700; }
+.person-toggle::before { content: "▸"; display: inline-block; color: var(--muted); transition: transform 0.12s; }
+.person-card[open] .person-toggle::before { transform: rotate(90deg); }
+/* How much each person has, against the busiest: split by urgency, most urgent first. */
+.load-bar { grid-column: 1 / -1; display: block; height: 10px; background: var(--track); border-radius: 5px; overflow: hidden; }
+.load-fill { display: flex; height: 100%; }
+.load-fill i { display: block; min-width: 3px; }
+.load-critical { background: var(--critical); }
+.load-high { background: var(--red); }
+.load-normal { background: var(--dot-orange); }
+.load-low { background: var(--dot-grey); }
+.person-levels { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; font-size: 0.85rem; color: var(--muted); }
+.person-levels:empty { display: none; }
+.person-level { display: inline-flex; align-items: center; gap: 6px; }
+.person-level .dot { width: 10px; height: 10px; box-shadow: none; }
+.person-overdue { font-weight: 600; color: var(--danger); }
+.person-tasks { list-style: none; padding: 3px 14px 6px; }
+.person-task { display: flex; align-items: center; gap: 11px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.person-task:last-child { border-bottom: 0; }
+.person-task .dot { width: 11px; height: 11px; }
+.person-task-main { flex: 1; min-width: 0; }
+.person-task-main .win-meta { display: block; }
+.person-none { padding: 10px 14px; }
+
 /* The calendar: people down the side, days across the top, as on the task sheet */
 .week-waiting {
   display: flex;
@@ -834,7 +872,10 @@ body::before {
 .task-chosen { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; }
 .task-chosen-text { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
 .task-chosen-text .win-meta, .task-option .win-meta { display: block; font-weight: 400; }
-.task-options { list-style: none; margin-top: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.task-picker [data-task-search] { margin-top: 6px; }
+/* A project can hold a lot of tasks, so the list scrolls in its own box. */
+.task-options { list-style: none; max-height: 260px; margin-top: 4px; overflow-y: auto; overscroll-behavior: contain; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.task-option.is-subtask { padding-left: 30px; }
 .task-option { display: block; width: 100%; min-height: 40px; padding: 7px 12px; text-align: left; font-weight: 600; overflow-wrap: anywhere; color: inherit; background: none; border: 0; border-bottom: 1px solid var(--line); cursor: pointer; }
 .task-options li:last-child .task-option { border-bottom: 0; }
 .task-option:hover, .task-option:focus-visible { background: var(--surface-2); }

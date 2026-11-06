@@ -52,6 +52,7 @@
           <nav class="topnav" aria-label="Sections">
             <a id="nav-projects" class="topnav-link" href="#">Projects</a>
             <a id="nav-calendar" class="topnav-link" href="#calendar">Calendar</a>
+            <a id="nav-people" class="topnav-link" href="#people">People</a>
           </nav>
           <span id="summary" class="summary"></span>
         </div>
@@ -178,6 +179,16 @@
         <span><span class="week-chip-repeat" aria-hidden="true">↻</span> Repeats every week or month</span>
         <span>Click an empty day on someone's row to set a meeting with them.</span>
       </div>
+    </main>
+
+    <!-- People: who has what, and how much of it is urgent -->
+    <main id="people-view" class="sheet-wrap" hidden>
+      <div class="page-head">
+        <h1 class="page-title">People</h1>
+        <span id="people-summary" class="summary"></span>
+      </div>
+      <p class="people-hint">Open tasks and subtasks for each person, with the heaviest urgent load first. Urgent means Critical or High. Something assigned to two people counts for both. Click a person to see their tasks.</p>
+      <div id="people-cards" class="people-cards"></div>
     </main>
     <datalist id="people-list"></datalist>
   </div>

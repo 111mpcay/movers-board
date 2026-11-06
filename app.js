@@ -52,6 +52,7 @@ const state = {
   lastDrop: 0,
   writes: 0, // bumps on every change so a slower, older read can't undo it
   pollTimer: null,
+  peopleOpen: new Set(), // whose cards are open on the People page
   lastRoll: 0, // when this page last asked the board to check for reminders
   rolledDay: "", // and which day that was, so it asks again when the date changes
   windowEntryHref: history.state?.boardWindow ? location.href : null, // this history entry's address, if it was added for a phone's window
@@ -377,6 +378,9 @@ function showGate(message) {
   $("week-grid").replaceChildren();
   delete $("week-grid").dataset.sig;
   delete $("week-grid").dataset.week;
+  $("people-cards").replaceChildren();
+  delete $("people-cards").dataset.sig;
+  state.peopleOpen.clear();
   $("board-view").hidden = true;
   $("gate").hidden = false;
   $("name-input").value = readStorage("localStorage", NAME_KEY) || "";
@@ -439,6 +443,7 @@ function routeProjectId() {
 }
 
 const onCalendar = () => location.hash === "#calendar";
+const onPeople = () => location.hash === "#people";
 
 function deletedNote(id, fallback) {
   const gone = state.deleted.find((d) => d.item_id === id);
@@ -455,13 +460,16 @@ function syncRoute() {
   }
   state.projectId = exists ? id : null;
   const calendar = onCalendar();
+  const people = onPeople();
   $("calendar-view").hidden = !calendar;
-  $("projects-view").hidden = calendar || !!state.projectId;
+  $("people-view").hidden = !people;
+  $("projects-view").hidden = calendar || people || !!state.projectId;
   $("project-view").hidden = !state.projectId;
   $("add-btn").hidden = !state.projectId;
   $("set-meeting-btn").hidden = !calendar;
-  $("nav-projects").classList.toggle("is-current", !calendar);
+  $("nav-projects").classList.toggle("is-current", !calendar && !people);
   $("nav-calendar").classList.toggle("is-current", calendar);
+  $("nav-people").classList.toggle("is-current", people);
 }
 
 function projectPercent(id) {
@@ -488,7 +496,7 @@ function renderProjectCards() {
 
 function renderProjectPage() {
   const project = state.projects.find((p) => p.id === state.projectId);
-  document.title = project ? `${project.name} · Movers Board` : onCalendar() ? "Calendar · Movers Board" : "Movers Board";
+  document.title = project ? `${project.name} · Movers Board` : onCalendar() ? "Calendar · Movers Board" : onPeople() ? "People · Movers Board" : "Movers Board";
   if (!project) return;
   const percent = projectPercent(project.id);
   $("project-title").textContent = project.name;
@@ -838,6 +846,7 @@ function renderBoard() {
   renderSummary();
   renderPeople();
   renderCalendar();
+  renderPeoplePage();
   renderNotifications();
 }
 
@@ -1368,10 +1377,11 @@ function repeatField() {
   return field("Repeats", optionsSelect("repeat", REPEATS), el("span", { class: "hint", "data-repeat-note": true }));
 }
 
-// Where a task sits, to tell apart tasks with similar names: the task it's under, then its project.
-function taskPlace(task) {
+// Where a task sits, to tell apart tasks with similar names: the task it's under, then its
+// project, unless the project is already clear from where this is shown.
+function taskPlace(task, withProject = true) {
   const parent = task.parent_id && findTask(task.parent_id);
-  return [parent && `in ${parent.title}`, state.projects.find((p) => p.id === task.project_id)?.name].filter(Boolean).join(" · ");
+  return [parent && `in ${parent.title}`, withProject && state.projects.find((p) => p.id === task.project_id)?.name].filter(Boolean).join(" · ");
 }
 
 // Every task in board order, each followed by its subtasks.
@@ -1382,76 +1392,76 @@ function tasksInOrder() {
     .flatMap((t) => [t, ...subtasksOf(t.id)]);
 }
 
-// One task or subtask, found by typing part of its name. Once picked it shows as a tag
-// that can be taken off again.
+// One task or subtask for a meeting. The project comes first, which lists that project's
+// tasks, and typing narrows the list. Once picked, the task shows as a tag that can be
+// taken off again.
 function taskPicker(taskId = null) {
-  const SHOWN = 8;
   let current = findTask(taskId) ? taskId : null;
-  const box = textInput({ maxlength: "200", placeholder: "Search for a task by name", "aria-label": "Task to link", "data-task-search": true });
+  const projects = [...state.projects].sort((a, b) => a.position - b.position);
+  const project = el("select", { class: "input", "aria-label": "Project the task is in", "data-task-project": true },
+    el("option", { value: "" }, "Choose a project"),
+    ...projects.map((p) => el("option", { value: p.id }, p.name)),
+    el("option", { value: "all" }, "All projects"));
+  const box = textInput({ maxlength: "200", placeholder: "Type to narrow the list", "aria-label": "Search the tasks listed", "data-task-search": true, hidden: true });
   const list = el("ul", { class: "task-options", hidden: true });
   const chosen = el("div", { class: "task-chosen", hidden: true });
+  const everywhere = () => project.value === "all";
   const matches = () => {
     const typed = box.value.trim().toLowerCase();
-    return tasksInOrder().filter((t) => t.title.toLowerCase().includes(typed));
-  };
-  const showOptions = () => {
-    const found = matches();
-    list.hidden = false;
-    list.replaceChildren(...[
-      ...found.slice(0, SHOWN).map((t) => el("li", {},
-        el("button", { class: "task-option", type: "button", "data-task-option": t.id },
-          t.title, el("span", { class: "win-meta" }, [taskPlace(t), STATUS[t.status]].filter(Boolean).join(" · "))))),
-      !found.length && el("li", { class: "task-options-note" }, "No task matches that."),
-      found.length > SHOWN && el("li", { class: "task-options-note" }, `${found.length - SHOWN} more. Type more of the name to narrow it down.`),
-    ].filter(Boolean));
+    return tasksInOrder().filter((t) => (everywhere() || t.project_id === project.value) && t.title.toLowerCase().includes(typed));
   };
   const render = () => {
     const task = findTask(current);
+    const browsing = !task && project.value !== "";
     chosen.hidden = !task;
-    box.hidden = !!task;
-    if (task) list.hidden = true;
+    project.hidden = !!task;
+    box.hidden = !browsing;
+    list.hidden = !browsing;
     chosen.replaceChildren(...(task ? [
       el("span", { class: "task-chosen-text" }, task.title, el("span", { class: "win-meta" }, taskPlace(task))),
       el("button", { class: "name-tag-x", type: "button", "aria-label": `Unlink ${task.title}`, "data-task-clear": true }, "×"),
     ] : []));
+    if (!browsing) return;
+    const found = matches();
+    const nothing = box.value.trim() ? "No task matches that." : everywhere() ? "There are no tasks yet." : "No tasks in this project yet.";
+    list.replaceChildren(...(found.length
+      ? found.map((t) => el("li", {},
+        el("button", { class: `task-option${t.parent_id ? " is-subtask" : ""}`, type: "button", "data-task-option": t.id },
+          t.title, el("span", { class: "win-meta" }, [taskPlace(t, everywhere()), STATUS[t.status]].filter(Boolean).join(" · ")))))
+      : [el("li", { class: "task-options-note" }, nothing)]));
   };
   const pick = (id) => {
     current = id;
     box.value = "";
     render();
   };
-  box.addEventListener("focus", showOptions);
-  box.addEventListener("input", showOptions);
-  box.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault(); // Enter here picks a task. It doesn't send the form.
-      const first = matches()[0];
-      if (first) pick(first.id);
-    } else if (event.key === "Escape" && !list.hidden) {
-      event.stopPropagation(); // Esc here puts the list away, not the whole window
-      list.hidden = true;
-    }
+  project.addEventListener("change", () => {
+    box.value = "";
+    render();
   });
-  // Some browsers don't move focus to a button that's clicked, which would put the list
-  // away before the click lands. Keeping focus in the box avoids that.
-  list.addEventListener("mousedown", (event) => event.preventDefault());
+  box.addEventListener("input", render);
+  box.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault(); // Enter here picks a task. It doesn't send the form.
+    const first = matches()[0];
+    if (first) pick(first.id);
+  });
   list.addEventListener("click", (event) => {
     const option = event.target.closest("[data-task-option]");
     if (option) pick(option.dataset.taskOption);
   });
   chosen.addEventListener("click", (event) => {
     if (!event.target.closest("[data-task-clear]")) return;
+    // Back to the list the task came from, to pick a different one.
+    const from = findTask(current)?.project_id;
+    project.value = projects.some((p) => p.id === from) ? from : "";
     current = null;
     render();
-    box.focus();
-  });
-  const root = el("div", { class: "task-picker" }, chosen, box, list);
-  root.addEventListener("focusout", (event) => {
-    if (!root.contains(event.relatedTarget)) list.hidden = true;
+    project.focus();
   });
   render();
   // A task deleted while the form was open counts as no task.
-  return { root, value: () => (findTask(current) ? current : null) };
+  return { root: el("div", { class: "task-picker" }, chosen, project, box, list), value: () => (findTask(current) ? current : null) };
 }
 
 function taskFields(assignPicker) {
@@ -2375,7 +2385,7 @@ function buildMeetingForm(w, meeting) {
     el("div", { class: "field" },
       el("span", { class: "label" }, "Linked task"),
       w.taskPicker.root,
-      el("p", { class: "hint" }, "Optional. The meeting will show this task and how far along it is.")),
+      el("p", { class: "hint" }, "Optional. Choose the project, then the task. The meeting will show the task and how far along it is.")),
     !meeting && el("div", { class: "field" },
       el("span", { class: "label" }, "People to invite"),
       w.invitePicker.root,
@@ -2460,6 +2470,105 @@ async function submitMeetingForm(w, meeting, event) {
   Object.assign(opened, { x, y, width });
   placeWindow(opened);
 }
+
+// ---------- People: who has what ----------
+
+const URGENCY_ORDER = ["critical", "high", "normal", "low"];
+
+// Open work for each person: every task and subtask that isn't done, counted for everyone
+// it's assigned to. The heaviest urgent load comes first, since that's where work piles
+// up. Work nobody has goes last.
+function workload() {
+  const open = state.tasks.filter((t) => t.status !== "done");
+  const done = state.tasks.filter((t) => t.status === "done");
+  const has = (task, key) => task.assignees.some((name) => personKey(name) === key);
+  const rank = (task) => URGENCY_ORDER.indexOf(task.urgency);
+  const mostUrgentFirst = (a, b) => rank(a) - rank(b) || (a.deadline || "9999").localeCompare(b.deadline || "9999") || a.title.localeCompare(b.title);
+  const entry = (key, name, tasks, doneCount) => {
+    const levels = Object.fromEntries(URGENCY_ORDER.map((level) => [level, tasks.filter((t) => t.urgency === level).length]));
+    return {
+      key, name, levels, done: doneCount,
+      tasks: [...tasks].sort(mostUrgentFirst),
+      urgent: levels.critical + levels.high,
+      overdue: tasks.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length,
+    };
+  };
+  const people = peopleFrom([...state.people, ...state.tasks.flatMap((t) => t.assignees)])
+    .map(({ key, name }) => entry(key, name, open.filter((t) => has(t, key)), done.filter((t) => has(t, key)).length))
+    .sort((a, b) => b.urgent - a.urgent || b.levels.critical - a.levels.critical || b.tasks.length - a.tasks.length || a.name.localeCompare(b.name));
+  const nobody = open.filter((t) => !t.assignees.length);
+  return { open, cards: nobody.length ? [...people, entry("", "Unassigned", nobody, 0)] : people };
+}
+
+function renderPeoplePage() {
+  if ($("people-view").hidden) return;
+  const { open, cards } = workload();
+  const urgent = open.filter((t) => t.urgency === "critical" || t.urgency === "high").length;
+  const unassigned = open.filter((t) => !t.assignees.length).length;
+  $("people-summary").textContent = [`${open.length} open`, `${urgent} urgent`, unassigned && `${unassigned} unassigned`].filter(Boolean).join(" · ");
+
+  // Bars are measured against the busiest person, so the longest bar is the biggest load.
+  const most = Math.max(1, ...cards.map((c) => c.tasks.length));
+  const me = personKey(state.name);
+  const view = cards.map((c) => ({
+    key: c.key,
+    name: c.key === me ? `${c.name} (you)` : c.name,
+    person: c.key ? c.name : null,
+    count: c.tasks.length,
+    urgent: c.urgent,
+    levels: c.levels,
+    overdue: c.overdue,
+    done: c.done,
+    width: Math.round((c.tasks.length / most) * 100),
+    tasks: c.tasks.map((t) => ({ id: t.id, title: t.title, urgency: t.urgency, about: [taskPlace(t), STATUS[t.status], `${t.progress}%`].filter(Boolean).join(" · "), due: deadlineNote(t) })),
+  }));
+
+  // Only rebuilds when something shows differently, so an open card and keyboard focus survive a refresh.
+  const list = $("people-cards");
+  const signature = JSON.stringify(view);
+  if (list.dataset.sig === signature) return;
+  list.dataset.sig = signature;
+  list.replaceChildren(...view.map((c) => el("details", { class: `person-card${c.person ? "" : " is-unassigned"}`, "data-person-card": c.key, open: state.peopleOpen.has(c.key) },
+    el("summary", { class: "person-head" },
+      c.person
+        ? el("span", { class: "name-tag person-name", style: personColorStyle(personColor(c.person)), "data-person": c.person }, c.name)
+        : el("span", { class: "person-name person-nobody" }, c.name),
+      " ",
+      el("span", { class: "person-figures" },
+        el("span", { class: `person-urgent${c.urgent ? " has-urgent" : ""}` }, `${c.urgent} urgent`), " ",
+        el("span", { class: "person-open" }, `${c.count} open`), " ",
+        el("span", { class: "person-toggle", "aria-hidden": "true" })),
+      el("span", { class: "load-bar", "aria-hidden": "true" },
+        el("span", { class: "load-fill", style: `width: ${c.width}%` },
+          ...URGENCY_ORDER.filter((level) => c.levels[level]).map((level) => el("i", { class: `load-${level}`, style: `flex: ${c.levels[level]}` })))),
+      el("span", { class: "person-levels" },
+        ...URGENCY_ORDER.filter((level) => c.levels[level]).flatMap((level) => [
+          el("span", { class: "person-level" }, el("span", { class: `dot dot-${level}`, "aria-hidden": "true" }), `${c.levels[level]} ${URGENCY[level]}`), " "]),
+        c.overdue > 0 && el("span", { class: "person-overdue" }, `${c.overdue} overdue`), " ",
+        c.done > 0 && el("span", { class: "person-done" }, `${c.done} done`))),
+    c.tasks.length
+      ? el("ul", { class: "person-tasks" }, ...c.tasks.map((t) => el("li", { class: "person-task", "data-person-task": t.id },
+        el("span", { class: `dot dot-${t.urgency}`, role: "img", "aria-label": `${URGENCY[t.urgency]} urgency`, title: `${URGENCY[t.urgency]} urgency` }),
+        el("span", { class: "person-task-main" },
+          el("button", { class: "link-btn", type: "button", "data-open-task": t.id }, t.title),
+          el("span", { class: "win-meta" }, t.about)),
+        t.due && el("span", { class: `due-note due-${t.due.tone}` }, t.due.text))))
+      : el("p", { class: "win-empty person-none" }, "Nothing open."))));
+}
+
+$("people-cards").addEventListener("click", (event) => {
+  const task = event.target.closest("[data-open-task]");
+  if (task) openTask(task.dataset.openTask);
+});
+
+// Remembers which cards are open, so they stay open when the list is redrawn. Opening and
+// closing doesn't bubble up, so it's caught on the way down.
+$("people-cards").addEventListener("toggle", (event) => {
+  const card = event.target.closest?.("[data-person-card]");
+  if (!card) return;
+  if (card.open) state.peopleOpen.add(card.dataset.personCard);
+  else state.peopleOpen.delete(card.dataset.personCard);
+}, true);
 
 // ---------- Notifications ----------
 
