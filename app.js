@@ -380,6 +380,8 @@ function showGate(message) {
   delete $("week-grid").dataset.week;
   $("people-cards").replaceChildren();
   delete $("people-cards").dataset.sig;
+  $("today-list").replaceChildren();
+  delete $("today-list").dataset.sig;
   state.peopleOpen.clear();
   $("board-view").hidden = true;
   $("gate").hidden = false;
@@ -847,6 +849,7 @@ function renderBoard() {
   renderPeople();
   renderCalendar();
   renderPeoplePage();
+  renderToday();
   renderNotifications();
 }
 
@@ -2470,6 +2473,68 @@ async function submitMeetingForm(w, meeting, event) {
   Object.assign(opened, { x, y, width });
   placeWindow(opened);
 }
+
+// ---------- Today's summary: what changed in a project today ----------
+
+const TODAY_OPEN_KEY = "board.todayOpen";
+const BOARD_ACTOR = "Movers Board"; // the name on changes the board makes by itself, like reopening a repeating task
+
+// Today's entries from the history of this project's tasks and subtasks, grouped by task,
+// with the task touched most recently first. What the board did by itself is left out.
+function todaysUpdates(projectId) {
+  const today = dayKey(new Date());
+  const newestFirst = (a, b) => new Date(b.at) - new Date(a.at);
+  return state.tasks
+    .filter((task) => task.project_id === projectId)
+    .map((task) => ({
+      task,
+      // The history is kept oldest first. Turning it round before sorting puts the later of
+      // two entries made at the same instant on top.
+      entries: [...(task.updates || [])].reverse().filter((entry) => entry.by !== BOARD_ACTOR && dayKey(new Date(entry.at)) === today).sort(newestFirst),
+    }))
+    .filter((group) => group.entries.length)
+    .sort((a, b) => newestFirst(a.entries[0], b.entries[0]));
+}
+
+function renderToday() {
+  if ($("project-view").hidden) return;
+  const groups = todaysUpdates(state.projectId);
+  const count = groups.reduce((sum, group) => sum + group.entries.length, 0);
+  const some = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  $("today-count").textContent = count ? `${some(count, "update")} on ${some(groups.length, "task")}` : "No updates yet today";
+
+  const view = groups.map(({ task, entries }) => ({
+    id: task.id,
+    title: task.title,
+    about: [taskPlace(task, false), STATUS[task.status], `${task.progress}%`].filter(Boolean).join(" · "),
+    entries: entries.map((entry) => ({ who: entry.by, time: formatTime(new Date(entry.at)), text: entry.text, note: entry.kind === "note" })),
+  }));
+  // Only rebuilds when something shows differently, so keyboard focus survives a refresh.
+  const list = $("today-list");
+  const signature = JSON.stringify(view);
+  if (list.dataset.sig === signature) return;
+  list.dataset.sig = signature;
+  list.replaceChildren(...view.map((group) => el("section", { class: "today-task", "data-today-task": group.id },
+    el("div", { class: "today-task-head" },
+      el("button", { class: "link-btn", type: "button", "data-open-task": group.id }, group.title), " ",
+      el("span", { class: "win-meta" }, group.about)),
+    el("ul", { class: "today-entries" }, ...group.entries.map((entry) => el("li", { class: `today-entry${entry.note ? " is-note" : ""}` },
+      el("span", { class: "today-time" }, entry.time), " ",
+      el("span", { class: "today-body" },
+        el("strong", { class: "today-who" }, entry.who), " ",
+        // What someone wrote is quoted. The rest is the board's own record of a change.
+        el("span", { class: "today-text" }, entry.note ? `“${entry.text}”` : entry.text))))))));
+}
+
+$("today-summary").open = readStorage("localStorage", TODAY_OPEN_KEY) !== "0";
+// Folded or open is this person's choice, kept on this device.
+$("today-summary").addEventListener("toggle", () => {
+  writeStorage("localStorage", TODAY_OPEN_KEY, $("today-summary").open ? null : "0");
+});
+$("today-list").addEventListener("click", (event) => {
+  const task = event.target.closest("[data-open-task]");
+  if (task) openTask(task.dataset.openTask);
+});
 
 // ---------- People: who has what ----------
 

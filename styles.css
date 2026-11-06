@@ -682,6 +682,27 @@ body::before {
 .topnav-link:hover { color: var(--ink); }
 .topnav-link.is-current { color: var(--ink); border-bottom-color: var(--orange); }
 
+/* What people changed in this project today, task by task */
+.today { margin-bottom: 14px; background: var(--surface); border: 1px solid var(--line); border-left: 5px solid var(--orange); border-radius: 8px; }
+.today-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 10px 14px; cursor: pointer; list-style: none; }
+.today-head::-webkit-details-marker { display: none; }
+.today-title { font: 700 1.1rem/1.2 var(--font-display); letter-spacing: 0.01em; }
+.today-count { flex: 1; font-size: 0.9rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.today-toggle::before { content: "▸"; display: inline-block; color: var(--muted); transition: transform 0.12s; }
+.today[open] .today-toggle::before { transform: rotate(90deg); }
+.today-list { padding: 0 14px 4px; }
+.today-list:empty { display: none; }
+.today-task { padding: 9px 0; border-top: 1px solid var(--line); }
+.today-task-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.today-task-head .link-btn { font-weight: 700; }
+.today-entries { list-style: none; margin-top: 4px; }
+.today-entry { display: grid; grid-template-columns: 4.8em minmax(0, 1fr); gap: 0 8px; padding: 2px 0; font-size: 0.9rem; }
+.today-time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.today-body { min-width: 0; overflow-wrap: anywhere; }
+.today-who { font-weight: 600; }
+/* Something a person wrote, as opposed to the record of a change. */
+.today-entry.is-note .today-text { padding: 1px 6px; background: var(--updates-bg); border-radius: 4px; }
+
 /* People: who has what, and how much of it is urgent */
 .people-hint { max-width: 760px; margin: -6px 0 14px; font-size: 0.88rem; color: var(--muted); }
 .people-cards { display: grid; gap: 10px; max-width: 900px; }
