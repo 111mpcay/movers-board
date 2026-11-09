@@ -1023,6 +1023,8 @@ body::before {
   border-bottom: 1px solid var(--line);
 }
 .notify-head h2 { font-size: 0.95rem; font-weight: 700; }
+.notify-tools { display: flex; align-items: center; gap: 14px; }
+#notify-sound[aria-pressed="false"] { color: var(--muted); }
 .notify-list { list-style: none; }
 .notify-item {
   display: block;

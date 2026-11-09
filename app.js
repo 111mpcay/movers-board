@@ -66,6 +66,8 @@ const state = {
   meetings: [],
   weekStart: startOfWeek(new Date()), // the Monday of the week the calendar is showing
   notifications: [],
+  noticesSeen: null, // the notices at the last read, to tell which are new; nothing before the first
+  lastChime: 0, // when the notification sound last played
   deleted: [], // what was deleted lately, so a page that had it open can say who did it
   people: [],
   personColors: new Map(), // each person's slot in the palette
@@ -432,6 +434,7 @@ function showGate(message) {
   state.meetings = [];
   state.weekStart = startOfWeek(new Date());
   state.notifications = [];
+  state.noticesSeen = null;
   state.deleted = [];
   state.people = [];
   state.personColors = new Map();
@@ -1238,6 +1241,7 @@ async function refresh() {
         state.notifications = result.notifications || [];
         state.deleted = result.deleted || [];
         state.people = result.people || [];
+        announceNotices(state.notifications);
         renderBoard();
       }
       if ($("sync-note").dataset.offline) {
@@ -1278,8 +1282,16 @@ document.addEventListener("visibilitychange", () => {
 
 // Keeps "5 min ago" and "Due today" correct on a list left open, and has the board check
 // for reminders when the day changes, a meeting comes within the hour, or it's been a while.
+// A page in the background stops checking for changes, except for this once a minute when
+// the notification sound is on, which is the only thing it has to tell anyone there.
 function everyMinute() {
-  if (!state.pollTimer || document.hidden) return;
+  if (!state.pollTimer) return;
+  if (document.hidden) {
+    if (!soundOn()) return;
+    if (rollIsDue()) rollTasks().then(refresh);
+    else refresh();
+    return;
+  }
   if (rollIsDue()) rollTasks().then(refresh);
   if (!state.dragging) renderBoard();
 }
@@ -1629,7 +1641,11 @@ function taskPicker(taskId = null) {
   });
   render();
   // A task deleted while the form was open counts as no task.
-  return { root: el("div", { class: "task-picker" }, chosen, project, box, list), value: () => (findTask(current) ? current : null) };
+  return {
+    root: el("div", { class: "task-picker" }, chosen, project, box, list),
+    value: () => (findTask(current) ? current : null),
+    set(id) { if (findTask(id)) pick(id); },
+  };
 }
 
 function taskFields(assignPicker) {
@@ -1711,10 +1727,11 @@ function buildTaskWindow(w, task) {
     // The project's own columns, when it has any.
     el("div", { class: "own-fields", "data-custom-fields": true, hidden: true }),
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
-    // Only there when a meeting has been linked to this task.
-    el("section", { class: "win-section", "data-section": "meetings", hidden: true },
+    // The meetings set for this task, and a way to set another without leaving it.
+    el("section", { class: "win-section", "data-section": "meetings" },
       el("h3", { class: "win-heading" }, "Meetings", el("span", { class: "win-count", "data-count": "meetings" })),
-      el("ul", { class: "win-list", "data-list": "meetings" })),
+      el("ul", { class: "win-list", "data-list": "meetings" }),
+      el("div", { class: "win-form" }, el("button", { class: "btn btn-quiet", type: "button", "data-set-meeting": true }, "Set a meeting"))),
     !isSubtask && el("details", { class: "win-fold" },
       el("summary", { class: "win-heading" }, "Subtasks", el("span", { class: "win-count", "data-count": "subtasks" })),
       el("ul", { class: "win-list", "data-list": "subtasks" }),
@@ -1831,15 +1848,15 @@ function renderTaskWindow(w) {
       : `${formatDay(first)}, ${formatTime(first)}`;
     return { id: m.id, title: m.title, when, past, at: at.getTime(), status: meetingStatus(m) };
   }).sort((a, b) => a.past - b.past || (a.past ? b.at - a.at : a.at - b.at));
-  w.body.querySelector('[data-section="meetings"]').hidden = !meetings.length;
   setCount(w, "meetings", meetings.length ? String(meetings.length) : "");
-  renderList(w, "meetings", meetings, () => meetings.map((m) => el("li", { class: `win-item${m.past ? " is-past" : ""}` },
+  renderList(w, "meetings", meetings, () => (meetings.length ? meetings.map((m) => el("li", { class: `win-item${m.past ? " is-past" : ""}` },
     el("span", { class: "win-item-main" },
       el("button", { class: "link-btn", type: "button", "data-open-meeting": m.id }, m.title)),
     el("span", { class: "win-meta" }, m.when),
     m.past
       ? el("span", { class: "win-meta" }, "Past")
-      : el("span", { class: `meeting-answer answer-${m.status[1]}` }, m.status[0]))));
+      : el("span", { class: `meeting-answer answer-${m.status[1]}` }, m.status[0])))
+    : [el("li", { class: "win-empty" }, `No meetings for this ${task.parent_id ? "subtask" : "task"} yet.`)]));
 
   const subtasks = subtasksOf(task.id);
   setCount(w, "subtasks", subtasks.length ? `${subtasks.filter((s) => s.status === "done").length}/${subtasks.length}` : "");
@@ -1987,6 +2004,7 @@ function onWindowClick(w, event) {
   if (opener) return openTask(opener.dataset.openTask);
   const meeting = target.closest("[data-open-meeting]");
   if (meeting) return openMeeting(meeting.dataset.openMeeting);
+  if (target.closest("[data-set-meeting]")) return openMeetingForm({ task: w.taskId });
   const assign = target.closest("[data-assign]");
   if (assign) return startAssigning(w, assign);
   const file = target.closest("[data-file]");
@@ -2719,9 +2737,10 @@ async function cancelMeeting(w, button) {
 
 // With a meeting, edits it. Otherwise sets a new one, or adds to the form already open,
 // so clicking another day or person updates it rather than losing what's been typed.
-function openMeetingForm({ meeting = null, day = null, person = null } = {}) {
+function openMeetingForm({ meeting = null, day = null, person = null, task = null } = {}) {
   const key = meeting ? `edit-meeting:${meeting.id}` : "new-meeting";
   let w = state.windows.get(key);
+  const fresh = !w;
   if (!w) {
     w = createWindow(key, meeting ? `Edit: ${meeting.title}` : "Set meeting");
     w.height = Math.min(w.height, meeting ? 690 : 830);
@@ -2737,8 +2756,22 @@ function openMeetingForm({ meeting = null, day = null, person = null } = {}) {
     w.showRepeatNote();
   }
   if (person) w.invitePicker.add(person);
+  // Set from a task's window: the meeting is for that task. A new form starts out named
+  // after it, with the people on it ready to invite. One already being filled in keeps
+  // what was typed and only changes which task it's for.
+  const title = w.body.querySelector('[data-input="title"]');
+  const forTask = !meeting && findTask(task);
+  if (forTask) {
+    w.taskPicker.set(forTask.id);
+    if (!title.value.trim() || title.value === w.titleFromTask) {
+      title.value = forTask.title;
+      w.titleFromTask = forTask.title;
+    }
+    if (fresh) forTask.assignees.forEach((name) => w.invitePicker.add(name));
+  }
   showWindow(w);
-  w.body.querySelector('[data-input="title"]').focus();
+  title.focus();
+  if (forTask && title.value === w.titleFromTask) title.select(); // typing replaces the suggested title
 }
 
 function buildMeetingForm(w, meeting) {
@@ -2842,6 +2875,7 @@ async function submitMeetingForm(w, meeting, event) {
   const opened = state.windows.get(`meeting:${id}`);
   Object.assign(opened, { x, y, width });
   placeWindow(opened);
+  renderWindows(); // so a task window that's open lists its new meeting without waiting
 }
 
 // ---------- Today's summary: what changed in a project today ----------
@@ -3045,6 +3079,69 @@ function notificationLines(n) {
   const yours = n.inside_count === 1 ? "1 item" : `${n.inside_count} items`;
   return [`${n.by_name} deleted a ${n.kind}`, [...where, `included ${yours} you created`]];
 }
+
+// ---------- The sound for a new notification ----------
+
+const SOUND_KEY = "board.sound"; // "0" on a device where it's been turned off
+const CHIME_GAP_MS = 15000; // a burst of changes is one sound, not one each
+// Browsers only allow sound once someone has clicked or typed on the page, so that's
+// when this is made. Until then a notification arrives silently.
+let audio = null;
+const soundOn = () => readStorage("localStorage", SOUND_KEY) !== "0";
+
+function wakeAudio() {
+  try {
+    audio ||= new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.state === "suspended") audio.resume();
+  } catch { /* this browser has no sound to offer */ }
+}
+window.addEventListener("pointerdown", wakeAudio, true);
+window.addEventListener("keydown", wakeAudio, true);
+
+// Two soft notes, the second higher. Says whether it could play.
+function chime() {
+  if (!audio || audio.state !== "running") return false;
+  const start = audio.currentTime + 0.02;
+  for (const [pitch, delay] of [[880, 0], [1174.66, 0.16]]) {
+    const tone = audio.createOscillator();
+    const level = audio.createGain();
+    tone.type = "sine";
+    tone.frequency.value = pitch;
+    level.gain.setValueAtTime(0.0001, start + delay);
+    level.gain.exponentialRampToValueAtTime(0.2, start + delay + 0.02);
+    level.gain.exponentialRampToValueAtTime(0.0001, start + delay + 0.5);
+    tone.connect(level).connect(audio.destination);
+    tone.start(start + delay);
+    tone.stop(start + delay + 0.55);
+  }
+  return true;
+}
+
+// A notice counts as new when it's unread and wasn't there at the last read, or has come
+// back to the top with another change. The first read after entering is never news.
+const noticeStamp = (n) => `${n.id} ${n.created_at}`;
+function announceNotices(notifications) {
+  const seen = state.noticesSeen;
+  state.noticesSeen = new Set(notifications.map(noticeStamp));
+  if (!seen || !soundOn()) return;
+  if (!notifications.some((n) => !n.read_at && !seen.has(noticeStamp(n)))) return;
+  if (Date.now() - state.lastChime < CHIME_GAP_MS) return;
+  state.lastChime = Date.now();
+  chime();
+}
+
+function renderSoundSwitch() {
+  $("notify-sound").setAttribute("aria-pressed", String(soundOn()));
+  $("notify-sound").textContent = soundOn() ? "Sound on" : "Sound off";
+}
+
+$("notify-sound").addEventListener("click", () => {
+  writeStorage("localStorage", SOUND_KEY, soundOn() ? "0" : null);
+  renderSoundSwitch();
+  // Turning it on plays it, so it's clear what to listen for.
+  if (soundOn()) chime();
+});
+renderSoundSwitch();
 
 function renderNotifications() {
   const unread = state.notifications.filter((n) => !n.read_at).length;
