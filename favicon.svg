@@ -1,8 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- Movers Board: an M whose right leg is an arrow going up, in the board's navy, white and orange. -->
-  <rect width="64" height="64" rx="14" fill="#2a4460"/>
-  <g fill="none" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
-    <path stroke="#fff" d="M13 51V22l14.5 17L45 24"/>
-    <path stroke="#db7100" d="M45 51V13M35.5 22.5 45 12.5l9.5 10"/>
+  <!-- Movers Board: a dark M with an orange arrow rising up its right leg. The white tile
+       keeps it readable on a dark tab strip. -->
+  <rect width="64" height="64" rx="14" fill="#fff"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path stroke="#17304a" stroke-width="7" d="M10.5 53V26l13 15.5 13-15.5v27"/>
+    <path stroke="#db7100" stroke-width="6" d="M44.5 53V11M36 19.5l8.5-9 8.5 9"/>
   </g>
 </svg>
