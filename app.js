@@ -1953,37 +1953,57 @@ function openTask(id) {
   showWindow(w);
 }
 
+// A task's window is its name and details, then sections that fold away. Which ones start
+// open is the same for every task: as this person last left them on this device, and
+// before that, the parts worked on most (subtasks and updates) open and the rest folded.
+const FOLDS_KEY = "board.taskFolds";
+const FOLD_DEFAULTS = { info: false, subtasks: true, updates: true, meetings: false, files: false };
+
+function foldStates() {
+  try {
+    return { ...FOLD_DEFAULTS, ...JSON.parse(readStorage("localStorage", FOLDS_KEY) || "{}") };
+  } catch {
+    return { ...FOLD_DEFAULTS };
+  }
+}
+
+function taskFold(name, heading, ...children) {
+  return el("details", { class: `win-fold${name === "updates" ? " win-updates" : ""}`, "data-fold": name, open: foldStates()[name] === true },
+    el("summary", { class: "win-heading" }, ...heading),
+    el("div", { class: "win-fold-body" }, ...children));
+}
+
 function buildTaskWindow(w, task) {
   const isSubtask = !!task.parent_id;
   w.assignPicker = namePicker({ label: "Assign to", names: task.assignees, onChange: (names) => updateTask(w.taskId, { assignees: names }) });
+  const [nameField, detailsField, ...whoAndWhen] = taskFields(w.assignPicker);
+  const count = (name) => el("span", { class: "win-count", "data-count": name });
   const parts = [
     isSubtask && el("p", { class: "win-parent" }, "Part of ", el("button", { class: "link-btn", type: "button", "data-open-task": task.parent_id }, "")),
-    ...taskFields(w.assignPicker),
-    !isSubtask && el("div", { class: "field-row" },
-      repeatField(),
-      field("Project", el("select", { class: "input", "data-field": "project_id" }))),
-    // Where else this task is mirrored. It's one task: those places only show it too.
-    !isSubtask && (w.mirrorPicker = mirrorPicker(task.id)).root,
-    columnField("progress", el("div", { class: "progress-wrap progress-wrap-large" },
-      el("output", { class: "progress-label" }, "0%"),
-      el("input", { class: "progress-range", type: "range", min: "0", max: "100", step: "5", "data-field": "progress" }))),
-    // The project's own columns, when it has any.
-    el("div", { class: "own-fields", "data-custom-fields": true, hidden: true }),
+    nameField,
+    detailsField,
+    // Outside the sections, so it shows whichever of them is folded away.
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
-    // The meetings set for this task, and a way to set another without leaving it.
-    el("section", { class: "win-section", "data-section": "meetings" },
-      el("h3", { class: "win-heading" }, "Meetings", el("span", { class: "win-count", "data-count": "meetings" })),
-      el("ul", { class: "win-list", "data-list": "meetings" }),
-      el("div", { class: "win-form" }, el("button", { class: "btn btn-quiet", type: "button", "data-set-meeting": true }, "Set a meeting"))),
-    !isSubtask && el("details", { class: "win-fold" },
-      el("summary", { class: "win-heading" }, "Subtasks", el("span", { class: "win-count", "data-count": "subtasks" })),
+    // Who it's for, when it's due and where it stands. Folded, its heading says the gist.
+    taskFold("info", ["Assignment and status", el("span", { class: "win-fold-note", "data-info-note": true })],
+      ...whoAndWhen,
+      !isSubtask && el("div", { class: "field-row" },
+        repeatField(),
+        field("Project", el("select", { class: "input", "data-field": "project_id" }))),
+      // Where else this task is mirrored. It's one task: those places only show it too.
+      !isSubtask && (w.mirrorPicker = mirrorPicker(task.id)).root,
+      columnField("progress", el("div", { class: "progress-wrap progress-wrap-large" },
+        el("output", { class: "progress-label" }, "0%"),
+        el("input", { class: "progress-range", type: "range", min: "0", max: "100", step: "5", "data-field": "progress" }))),
+      // The project's own columns, when it has any.
+      el("div", { class: "own-fields", "data-custom-fields": true, hidden: true })),
+    !isSubtask && taskFold("subtasks", ["Subtasks", count("subtasks")],
       el("ul", { class: "win-list", "data-list": "subtasks" }),
       el("form", { class: "win-form", "data-form": "subtask", novalidate: true },
         textInput({ maxlength: "200", placeholder: "Add a subtask", "aria-label": "New subtask", "data-input": "title" }),
         textInput({ class: "input is-narrow", maxlength: "200", list: "people-list", placeholder: "Assign", "aria-label": "Assign the new subtask to, with commas between names", "data-input": "assignee" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
-    el("section", { class: "win-section win-updates" },
-      el("h3", { class: "win-heading" }, "Updates"),
+    taskFold("updates", ["Updates"],
       el("form", { class: "win-form", "data-form": "update", novalidate: true },
         textInput({ maxlength: "1000", placeholder: "Add an update", "aria-label": "New update", "data-input": "text" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Post")),
@@ -1991,11 +2011,16 @@ function buildTaskWindow(w, task) {
       el("details", { class: "win-history" },
         el("summary", {}, "History", el("span", { class: "win-count", "data-count": "history" })),
         el("ul", { class: "activity-list", "data-list": "history" }))),
-    section("Files",
+    // The meetings set for this task, and a way to set another without leaving it.
+    taskFold("meetings", ["Meetings", count("meetings")],
+      el("ul", { class: "win-list", "data-list": "meetings" }),
+      el("div", { class: "win-form" }, el("button", { class: "btn btn-quiet", type: "button", "data-set-meeting": true }, "Set a meeting"))),
+    taskFold("files", ["Files and links", count("attachments")],
+      el("h4", { class: "win-subheading" }, "Files"),
       el("ul", { class: "win-list", "data-list": "files" }),
       el("div", { class: "win-form" },
-        el("label", { class: "btn btn-quiet win-upload" }, "Upload files", el("input", { type: "file", multiple: true, "data-upload": true })))),
-    section("Links",
+        el("label", { class: "btn btn-quiet win-upload" }, "Upload files", el("input", { type: "file", multiple: true, "data-upload": true }))),
+      el("h4", { class: "win-subheading" }, "Links"),
       el("ul", { class: "win-list", "data-list": "links" }),
       el("form", { class: "win-form", "data-form": "link", novalidate: true },
         textInput({ maxlength: "2000", placeholder: "Paste a link", "aria-label": "Link address", "data-input": "url", inputmode: "url" }),
@@ -2005,10 +2030,19 @@ function buildTaskWindow(w, task) {
       el("button", { class: "btn btn-danger", type: "button", "data-delete-task": true }, isSubtask ? "Delete this subtask" : "Delete this task")),
   ];
   w.body.append(...parts.filter(Boolean));
+  w.body.querySelector('[data-fold="meetings"]').dataset.section = "meetings";
   w.body.addEventListener("change", (event) => onWindowChange(w, event));
   w.body.addEventListener("input", previewProgress);
   w.body.addEventListener("submit", (event) => onWindowSubmit(w, event));
   w.body.addEventListener("click", (event) => onWindowClick(w, event));
+  // Opening or folding a section sets how that section starts in every task from now on.
+  // The event doesn't travel up the page, so it's caught on the way down.
+  w.body.addEventListener("toggle", (event) => {
+    const name = event.target.dataset?.fold;
+    const states = foldStates();
+    if (!name || states[name] === event.target.open) return;
+    writeStorage("localStorage", FOLDS_KEY, JSON.stringify({ ...states, [name]: event.target.open }));
+  }, true);
 }
 
 function showWindowError(w, message) {
@@ -2063,6 +2097,16 @@ function renderTaskWindow(w) {
   nameColumnFields(w.body, task.project_id);
   renderOwnFields(w, task);
   w.mirrorPicker?.render();
+  // The gist of the folded section, for its heading: who, when, how urgent, how far along.
+  const gist = [
+    task.assignees.length ? task.assignees.join(", ") : "Unassigned",
+    deadlineNote(task)?.text || (task.deadline ? formatDay(parseDate(task.deadline)) : null),
+    URGENCY[task.urgency],
+    STATUS[task.status],
+    `${task.progress}%`,
+  ].filter(Boolean).join(" · ");
+  const gistEl = w.body.querySelector("[data-info-note]");
+  if (gistEl.textContent !== gist) gistEl.textContent = gist;
   setFieldValue(w, "repeat", task.repeat || "none");
   const repeatNoteEl = w.body.querySelector("[data-repeat-note]");
   if (repeatNoteEl) repeatNoteEl.textContent = repeatNote(task);
@@ -2137,6 +2181,7 @@ function renderTaskWindow(w) {
     el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, el("span", { class: "activity-time" }, timeAgo(entry.at)))));
 
   const attachments = task.attachments || [];
+  setCount(w, "attachments", attachments.length ? String(attachments.length) : "");
   const files = attachments.filter((a) => a.kind === "file");
   renderList(w, "files", [files.map((f) => [f.id, f.title]), w.uploading], () => [
     ...files.map((f) => el("li", { class: "win-item" },
@@ -2844,6 +2889,7 @@ function renderCalendar() {
         repeat: repeats(m) ? repeatPhrase(m.repeat, new Date(m.starts_at)) : null,
         task: findTask(m.task_id)?.title ?? null,
         style: chipStyle(m, person.key),
+        movable: isOrganizer(m), // the person who set a meeting can drag it to another day
       }))
       .filter((chip) => chip.style)),
   }));
@@ -2860,7 +2906,7 @@ function renderCalendar() {
         `${date.toLocaleDateString(undefined, { weekday: "short" })} ${date.getDate()}`))),
     ...rows.map((row) => el("div", { class: "week-row", role: "row" },
       el("div", { class: "week-person", role: "rowheader" }, row.key === me ? `${row.name} (you)` : row.name),
-      ...row.cells.map((chips, i) => el("div", { class: `week-cell${dayKey(days[i]) === today ? " is-today" : ""}`, role: "cell" },
+      ...row.cells.map((chips, i) => el("div", { class: `week-cell${dayKey(days[i]) === today ? " is-today" : ""}`, role: "cell", "data-day": dayKey(days[i]) },
         el("button", {
           class: "week-add",
           type: "button",
@@ -2869,14 +2915,16 @@ function renderCalendar() {
           "aria-label": `Set a meeting${row.key === me ? "" : ` with ${row.name}`} on ${formatDay(days[i])}`,
         }),
         ...chips.map((chip) => el("button", {
-          class: `week-chip${chip.style === "wait" ? " is-waiting" : ""}`,
+          class: `week-chip${chip.style === "wait" ? " is-waiting" : ""}${chip.movable ? " is-movable" : ""}`,
           type: "button",
           "data-meeting": chip.id,
-          title: `${chip.time} ${chip.title}${chip.repeat ? ` (${chip.repeat})` : ""}${chip.task ? ` · Task: ${chip.task}` : ""}`,
+          title: `${chip.time} ${chip.title}${chip.repeat ? ` (${chip.repeat})` : ""}${chip.task ? ` · Task: ${chip.task}` : ""}${chip.movable ? " · Drag to another day to move it" : ""}`,
           "aria-label": (chip.repeat || chip.task) && [`${chip.time} ${chip.title}`, chip.repeat, chip.task && `for the task ${chip.task}`].filter(Boolean).join(", "),
         },
           el("span", { class: "week-chip-time" }, chip.time, chip.repeat && el("span", { class: "week-chip-repeat", "aria-hidden": "true" }, "↻")),
           chip.title)))))));
+
+  setUpMeetingDragging(grid);
 
   // Too narrow for all seven days: open a week on today, and leave it alone after that.
   if (grid.dataset.week !== dayKey(days[0])) {
@@ -2886,6 +2934,63 @@ function renderCalendar() {
     scroller.scrollLeft = 0;
     if (todayTab) scroller.scrollLeft = todayTab.getBoundingClientRect().left - grid.querySelector(".week-person").getBoundingClientRect().right;
   }
+}
+
+// The meetings this person set can be dragged from one day of the week to another. Every
+// day cell is somewhere a card can be dropped, on anyone's row: only the day counts.
+function setUpMeetingDragging(grid) {
+  if (!window.Sortable) return;
+  for (const cell of grid.querySelectorAll(".week-cell")) {
+    new window.Sortable(cell, {
+      group: "week-days",
+      sort: false,
+      draggable: ".week-chip.is-movable",
+      animation: 0,
+      forceFallback: true,
+      fallbackOnBody: true,
+      fallbackTolerance: 4,
+      delay: 160,
+      delayOnTouchOnly: true,
+      touchStartThreshold: 6,
+      ghostClass: "chip-ghost",
+      dragClass: "chip-drag",
+      onStart() {
+        state.dragging = true;
+        document.body.classList.add("is-dragging");
+      },
+      onEnd: handleMeetingDrop,
+    });
+  }
+}
+
+// The drag has already put the card in the cell it was dropped on. The week is redrawn
+// from the meetings themselves either way, so the page never shows what wasn't saved.
+function handleMeetingDrop(event) {
+  endDrag();
+  delete $("week-grid").dataset.sig;
+  const id = event.item?.dataset.meeting;
+  const from = event.from?.dataset.day;
+  const to = event.to?.dataset.day;
+  if (id && from && to && from !== to) moveMeetingToDay(id, from, to);
+  else renderCalendar();
+}
+
+// Moves a meeting to another day, at the same time of day and for as long. Only the person
+// who set it can. The day a repeating meeting is dragged from is one of many, so the whole
+// series shifts by as many days.
+async function moveMeetingToDay(id, fromDay, toDay) {
+  const meeting = findMeeting(id);
+  const days = Math.round((parseDate(toDay) - parseDate(fromDay)) / 86400000);
+  if (!meeting || !isOrganizer(meeting) || !days) return renderCalendar();
+  const shifted = (iso) => {
+    const date = new Date(iso);
+    date.setDate(date.getDate() + days); // by the calendar, so the clock time survives a change of hour
+    return date.toISOString();
+  };
+  const fields = { starts_at: shifted(meeting.starts_at), ends_at: shifted(meeting.ends_at) };
+  Object.assign(meeting, fields);
+  renderBoard();
+  await write(() => state.store.saveMeeting(id, fields), "That meeting didn't move, so it has gone back. Check your connection and try again.");
 }
 
 function showWeek(start) {

@@ -859,6 +859,10 @@ body::before {
   border-bottom: 1px solid var(--line);
 }
 .week-cell.is-today { background: var(--today-bg); }
+/* A meeting this person set can be dragged to another day */
+.week-chip.is-movable { cursor: grab; }
+.week-chip.chip-ghost { opacity: 0.4; }
+.week-chip.chip-drag { box-shadow: var(--shadow-lift); cursor: grabbing; }
 .week-add { position: absolute; inset: 0; padding: 0; background: none; border: 0; cursor: pointer; }
 .week-add:hover { background: var(--surface-2); }
 .week-add:hover::after, .week-add:focus-visible::after {
@@ -1173,8 +1177,15 @@ body::before {
   border: 1px solid var(--line);
   border-radius: 6px;
 }
+/* The sections of a task's window, each of which folds away under its heading */
 .win-fold > summary { cursor: pointer; }
 .win-fold:not([open]) > summary { margin-bottom: 0; }
+.win-fold[data-fold="info"] > .win-fold-body { display: flex; flex-direction: column; gap: 12px; padding-top: 2px; }
+/* What a folded section holds, said in its heading. Open, the fields say it themselves. */
+.win-fold-note { margin-left: 8px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--muted); }
+.win-fold[open] > summary .win-fold-note { display: none; }
+.win-subheading { margin: 10px 0 4px; font-size: 0.8rem; font-weight: 700; color: var(--muted); }
+.win-subheading:first-child { margin-top: 0; }
 .win-count { margin-left: 6px; font-weight: 600; color: var(--muted); }
 .win-history { margin-top: 10px; }
 .win-history > summary { width: fit-content; font-size: 0.84rem; font-weight: 600; color: var(--muted); cursor: pointer; }
