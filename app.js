@@ -245,20 +245,31 @@ const subtasksOf = (id) => state.tasks.filter((t) => t.parent_id === id).sort((a
 
 const findProject = (id) => state.projects.find((p) => p.id === id);
 
-// A task lives in one project and can be mirrored into others (supabase/015_task_mirrors.sql).
-// It's one task wherever it's opened, with its own place in each project's list. A subtask
-// is wherever its task is.
-const mirrorsOf = (task) => (task.parent_id ? findTask(task.parent_id)?.mirrors : task.mirrors) || [];
+// A task lives in one project and can be mirrored elsewhere: into a task of another project,
+// where it shows with that task's subtasks, or into a project's list as a row of its own
+// (supabase/015_task_mirrors.sql and 016_mirror_into_tasks.sql). It's one task wherever
+// it's opened. A subtask is wherever its task is. A mirror whose task has just been deleted
+// here is left out until the board's next read drops it.
+const mirrorsOf = (task) => ((task.parent_id ? findTask(task.parent_id)?.mirrors : task.mirrors) || []).filter((m) => !m.task_id || findTask(m.task_id));
 const projectsOf = (task) => [task.project_id, ...mirrorsOf(task).map((m) => m.project_id)];
+// Whether a task has anything to do with a project: it lives there, or is mirrored somewhere in it.
 const isIn = (task, projectId) => projectsOf(task).includes(projectId);
-const placeIn = (task, projectId) => (task.project_id === projectId ? task.position : task.mirrors?.find((m) => m.project_id === projectId)?.position ?? task.position);
-// A project's tasks in the order of its list: the ones that live there and the ones mirrored in.
-const tasksIn = (projectId) => state.tasks.filter((t) => !t.parent_id && isIn(t, projectId)).sort((a, b) => placeIn(a, projectId) - placeIn(b, projectId));
-// What a row says about a mirrored task, seen from one of its projects.
+// Whether it's a row of that project's own list, and where in it.
+const listMirror = (task, projectId) => task.mirrors?.find((m) => m.project_id === projectId && !m.task_id);
+const isListedIn = (task, projectId) => task.project_id === projectId || !!listMirror(task, projectId);
+const placeIn = (task, projectId) => (task.project_id === projectId ? task.position : listMirror(task, projectId)?.position ?? task.position);
+const tasksIn = (projectId) => state.tasks.filter((t) => !t.parent_id && isListedIn(t, projectId)).sort((a, b) => placeIn(a, projectId) - placeIn(b, projectId));
+// The tasks mirrored into a task, in the order they were put there.
+function heldBy(taskId) {
+  const place = (t) => t.mirrors.find((m) => m.task_id === taskId).position;
+  return state.tasks.filter((t) => t.mirrors?.some((m) => m.task_id === taskId)).sort((a, b) => place(a) - place(b));
+}
+// Where a mirror puts its task, in a few words.
+const mirrorPlace = (m) => (m.task_id ? `${findTask(m.task_id)?.title} (${findProject(m.project_id)?.name})` : findProject(m.project_id)?.name);
+// What a row says about a mirrored task, seen from one of the lists it's in.
 function mirrorNote(task, projectId) {
-  const name = (id) => findProject(id)?.name;
-  if (task.project_id !== projectId) return name(task.project_id) ? `Mirrored from ${name(task.project_id)}` : "";
-  const others = mirrorsOf(task).map((m) => name(m.project_id)).filter(Boolean);
+  if (task.project_id !== projectId) return findProject(task.project_id) ? `Mirrored from ${findProject(task.project_id).name}` : "";
+  const others = mirrorsOf(task).map(mirrorPlace).filter(Boolean);
   return others.length ? `Also in ${others.join(", ")}` : "";
 }
 
@@ -324,7 +335,8 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     save: (id, fields) => rpc("movers_save_task", { p_token: token, p_id: id, p_fields: fields }),
     // A mirrored task has a place in each project's list, so this says which list it was moved in.
     move: (id, position, projectId = null) => rpc("movers_move_task", { p_token: token, p_id: id, p_position: position, p_project: projectId }),
-    setMirrors: (id, projectIds) => rpc("movers_set_task_mirrors", { p_token: token, p_id: id, p_projects: projectIds }),
+    // Everywhere a task is mirrored, as the whole list: {task_id} for inside a task, {project_id} for a project's list.
+    mirrorTask: (id, targets) => rpc("movers_mirror_task", { p_token: token, p_id: id, p_targets: targets }),
     addUpdate: (id, text) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
     saveProject: (id, name, color) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name, p_color: color }),
@@ -697,7 +709,8 @@ $("delete-project-btn").addEventListener("click", async () => {
   // The tasks that live here go with the project, except the ones mirrored into another
   // project, which move there. Tasks mirrored in from elsewhere just stop showing here.
   const living = state.tasks.filter((t) => t.project_id === id && !t.parent_id);
-  const moving = new Set(living.filter((t) => t.mirrors?.length).map((t) => t.id));
+  const elsewhere = (t) => (t.mirrors || []).filter((m) => m.project_id !== id);
+  const moving = new Set(living.filter((t) => elsewhere(t).length).map((t) => t.id));
   const count = living.length - moving.size;
   const plural = (n, word) => (n === 1 ? `1 ${word}` : `${n} ${word}s`);
   const warning = [
@@ -719,13 +732,14 @@ $("delete-project-btn").addEventListener("click", async () => {
     state.projects = state.projects.filter((p) => p.id !== id);
     // What the board just did, done here too so nothing flickers before the next read.
     // That read may already have arrived, in which case these have moved and there's nothing to do.
-    for (const task of state.tasks.filter((t) => moving.has(t.id) && t.project_id === id && t.mirrors?.length)) {
-      const [first, ...rest] = task.mirrors;
+    for (const task of state.tasks.filter((t) => moving.has(t.id) && t.project_id === id && elsewhere(t).length)) {
+      const first = elsewhere(task)[0];
       subtasksOf(task.id).forEach((s) => { s.project_id = first.project_id; });
-      Object.assign(task, { project_id: first.project_id, position: first.position, mirrors: rest });
+      // It lives there now. If it got there through a task, it stays in that task as well.
+      Object.assign(task, { project_id: first.project_id, position: first.position, mirrors: task.mirrors.filter((m) => m.project_id !== first.project_id || m.task_id) });
     }
     state.tasks = state.tasks.filter((t) => t.project_id !== id);
-    state.tasks.forEach((t) => { if (t.mirrors) t.mirrors = t.mirrors.filter((m) => m.project_id !== id); });
+    state.tasks.forEach((t) => { if (t.mirrors) t.mirrors = t.mirrors.filter((m) => m.project_id !== id && (!m.task_id || findTask(m.task_id))); });
     location.hash = "";
     state.store.cleanFiles().catch(() => { /* retried by the next removal */ });
   } else {
@@ -792,8 +806,9 @@ function saveOwnValue(taskId, control, focusKey) {
   updateTask(taskId, { custom: { [field.id]: value } }, focusKey);
 }
 
+// A task's subtasks, and the tasks mirrored into it, which count as part of it.
 function subtaskSummary(task) {
-  const subtasks = subtasksOf(task.id);
+  const subtasks = [...subtasksOf(task.id), ...heldBy(task.id)];
   if (!subtasks.length) return "";
   return ` · ${subtasks.filter((s) => s.status === "done").length}/${subtasks.length} subtasks`;
 }
@@ -914,7 +929,7 @@ function sheetFitRule(needed) {
 }
 
 function renderSummary() {
-  const open = state.tasks.filter((t) => !t.parent_id && t.status !== "done" && (!state.projectId || isIn(t, state.projectId)));
+  const open = state.tasks.filter((t) => !t.parent_id && t.status !== "done" && (!state.projectId || isListedIn(t, state.projectId)));
   const overdue = open.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
   const today = open.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
   const parts = [el("span", {}, `${open.length} open`)];
@@ -1106,9 +1121,11 @@ async function updateTask(id, changes, focusField) {
   const { custom: _own, ...plainDiff } = diff;
   Object.assign(task, plainDiff, { updated_by: state.name, updated_at: new Date().toISOString() });
   if ("project_id" in plainDiff) {
-    // Moved to a project it was mirrored into: it lives there now, and isn't a mirror as well.
-    task.mirrors = (task.mirrors || []).filter((m) => m.project_id !== task.project_id);
+    // Moved to a project whose list it was mirrored into: it lives there now, and isn't in
+    // that list by a mirror as well. Tasks mirrored into this one go where it goes.
+    task.mirrors = (task.mirrors || []).filter((m) => m.project_id !== task.project_id || m.task_id);
     subtasksOf(id).forEach((s) => { s.project_id = task.project_id; });
+    heldBy(id).forEach((held) => held.mirrors.forEach((m) => { if (m.task_id === id) m.project_id = task.project_id; }));
   }
   task.custom = Object.fromEntries(Object.entries({ ...task.custom, ...own }).filter(([, value]) => String(value ?? "") !== ""));
   refreshRow(id, focusField);
@@ -1223,7 +1240,7 @@ async function handleDrop(event) {
   const index = order.indexOf(id);
   const position = positionBetween(placed(order[index - 1]), placed(order[index + 1]));
 
-  const mirror = task.project_id === projectId ? null : task.mirrors?.find((m) => m.project_id === projectId);
+  const mirror = task.project_id === projectId ? null : listMirror(task, projectId);
   if (mirror) mirror.position = position;
   else task.position = position;
   await write(() => state.store.move(id, position, projectId), "That move didn't save, so the row has gone back. Check your connection and try again.");
@@ -1772,35 +1789,128 @@ function nameColumnFields(root, projectId) {
   }
 }
 
-// The other projects a task is mirrored into, in its window: each as a tag that can be
-// taken off, and a list of the remaining projects to mirror it into.
-function renderMirrors(w, task) {
-  const box = w.body.querySelector("[data-mirrors]");
-  if (!box) return; // a subtask goes wherever its task goes
-  const mirrored = (task.mirrors || []).map((m) => findProject(m.project_id)).filter(Boolean);
-  const others = [...state.projects].sort((a, b) => a.position - b.position).filter((p) => !isIn(task, p.id));
-  const signature = JSON.stringify([mirrored.map((p) => [p.id, p.name]), others.map((p) => [p.id, p.name])]);
-  const select = box.querySelector("[data-mirror-add]");
-  if (box.dataset.sig === signature || select === document.activeElement) return;
-  box.dataset.sig = signature;
-  box.querySelector('[data-list="mirrors"]').replaceChildren(...mirrored.map((p) => el("li", { class: "name-tag mirror-tag", "data-mirror": p.id }, p.name,
-    el("button", { class: "name-tag-x", type: "button", "aria-label": `Stop mirroring into ${p.name}`, "data-unmirror": p.id }, "×"))));
-  select.hidden = !others.length;
-  select.replaceChildren(el("option", { value: "" }, mirrored.length ? "Mirror into another project" : "Mirror into a project"),
-    ...others.map((p) => el("option", { value: p.id }, p.name)));
-  // Nothing to show and nowhere to mirror to: one project on the whole board.
-  box.hidden = !mirrored.length && !others.length;
+// Where a task is mirrored, in its window: a pill for each place, and a way to add one by
+// choosing the project and then the task in it that should hold this one. It keeps what's
+// typed while the board refreshes behind it, and only redraws what has changed.
+function mirrorPicker(taskId) {
+  let adding = false;
+  let projectId = null; // the project chosen so far
+  const pills = el("ul", { class: "name-tags mirror-tags", "data-list": "mirrors" });
+  const open = el("button", { class: "mirror-add", type: "button", "data-mirror-open": true }, "+ Mirror to a task");
+  const prompt = el("p", { class: "mirror-prompt" });
+  const projects = el("ul", { class: "name-tags mirror-projects" });
+  const search = textInput({ maxlength: "200", placeholder: "Type to narrow the list", "aria-label": "Search the project's tasks", "data-mirror-search": true });
+  const options = el("ul", { class: "task-options" });
+  const cancel = el("button", { class: "link-btn", type: "button", "data-mirror-cancel": true }, "Cancel");
+  const panel = el("div", { class: "mirror-picker", "data-mirror-picker": true, hidden: true }, prompt, projects, search, options, cancel);
+  const root = el("div", { class: "field", "data-mirrors": true },
+    el("span", { class: "label" }, "Mirrored to"),
+    pills, open, panel,
+    el("p", { class: "hint" }, "A mirrored task is one task. It shows inside the task it's mirrored to, and a change made from either place shows in both."));
+
+  const places = () => mirrorsOf(findTask(taskId) || {});
+  const targetOf = (m) => (m.task_id ? { task_id: m.task_id } : { project_id: m.project_id });
+  const inOrder = () => [...state.projects].sort((a, b) => a.position - b.position);
+  // The tasks of the chosen project that could hold this one: whole tasks that live there,
+  // other than itself and the ones that hold it already.
+  function holders() {
+    const typed = search.value.trim().toLowerCase();
+    const holding = new Set(places().map((m) => m.task_id));
+    return state.tasks.filter((t) => t.project_id === projectId && !t.parent_id && t.id !== taskId && !holding.has(t.id) && t.title.toLowerCase().includes(typed))
+      .sort((a, b) => a.position - b.position);
+  }
+  // A project's own list can take it too, unless it lives there or is in that list already.
+  const listOffered = () => projectId !== findTask(taskId)?.project_id && !places().some((m) => m.project_id === projectId && !m.task_id);
+
+  function render() {
+    const task = findTask(taskId);
+    if (!task) return;
+    if (projectId && !findProject(projectId)) projectId = null; // the project was deleted meanwhile
+    const shown = places().map((m) => [m.project_id, m.task_id, findProject(m.project_id)?.name, findTask(m.task_id)?.title]);
+    const choice = !adding ? null : !projectId
+      ? inOrder().map((p) => [p.id, p.name])
+      : [projectId, findProject(projectId).name, listOffered(), holders().map((t) => [t.id, t.title, t.status]), search.value.trim() !== ""];
+    const signature = JSON.stringify([shown, adding, choice]);
+    if (root.dataset.sig === signature) return;
+    root.dataset.sig = signature;
+
+    pills.replaceChildren(...shown.map(([project, holder, projectName, title], i) => el("li", { class: "name-tag mirror-tag", "data-mirror": holder || project },
+      el("span", {}, `${projectName} › ${holder ? title : "task list"}`),
+      el("button", { class: "name-tag-x", type: "button", "aria-label": `Stop mirroring to ${holder ? title : projectName}`, "data-unmirror": i }, "×"))));
+    open.hidden = adding;
+    panel.hidden = !adding;
+    if (!adding) return;
+    const choosing = !projectId;
+    prompt.textContent = choosing ? "Choose the project" : "Now choose the task to mirror it to";
+    search.hidden = choosing;
+    options.hidden = choosing;
+    projects.replaceChildren(...(choosing
+      ? inOrder().map((p) => el("li", {}, el("button", { class: "name-tag mirror-tag mirror-choice", type: "button", "data-mirror-project": p.id }, p.name)))
+      : [el("li", {}, el("button", { class: "name-tag mirror-tag is-chosen", type: "button", "data-mirror-back": true, "aria-label": `${findProject(projectId).name}. Choose another project` },
+        el("span", {}, findProject(projectId).name), el("span", { class: "name-tag-x", "aria-hidden": "true" }, "×")))]));
+    if (choosing) return;
+    const found = holders();
+    options.replaceChildren(...[
+      ...found.map((t) => el("li", {}, el("button", { class: "task-option", type: "button", "data-mirror-task": t.id }, t.title, el("span", { class: "win-meta" }, STATUS[t.status])))),
+      !found.length && el("li", { class: "task-options-note" }, search.value.trim() ? "No task matches that." : "No tasks in this project to mirror it to."),
+      listOffered() && el("li", {}, el("button", { class: "task-option mirror-list-option", type: "button", "data-mirror-list": projectId },
+        "Not in a task", el("span", { class: "win-meta" }, "Show it as a row of this project's task list"))),
+    ].filter(Boolean));
+  }
+
+  function close() {
+    adding = false;
+    projectId = null;
+    search.value = "";
+    render();
+  }
+
+  search.addEventListener("input", render);
+  search.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault(); // Enter here picks the first task
+    options.querySelector("[data-mirror-task]")?.click();
+  });
+  root.addEventListener("click", (event) => {
+    const target = event.target;
+    const pick = (selector) => target.closest(selector);
+    if (pick("[data-mirror-open]")) {
+      adding = true;
+      render();
+    } else if (pick("[data-mirror-cancel]")) {
+      close();
+    } else if (pick("[data-mirror-project]")) {
+      projectId = pick("[data-mirror-project]").dataset.mirrorProject;
+      render();
+      search.focus();
+    } else if (pick("[data-mirror-back]")) {
+      projectId = null;
+      search.value = "";
+      render();
+    } else if (pick("[data-mirror-task]") || pick("[data-mirror-list]")) {
+      const added = pick("[data-mirror-task]") ? { task_id: pick("[data-mirror-task]").dataset.mirrorTask } : { project_id: pick("[data-mirror-list]").dataset.mirrorList };
+      const next = [...places().map(targetOf), added];
+      close();
+      setMirrors(taskId, next);
+    } else if (pick("[data-unmirror]")) {
+      const index = Number(pick("[data-unmirror]").dataset.unmirror);
+      setMirrors(taskId, places().filter((_, i) => i !== index).map(targetOf));
+    }
+  });
+  render();
+  return { root, render };
 }
 
-// Sets the whole list of projects a task is mirrored into, here first and then on the board.
-async function setMirrors(taskId, projectIds) {
+// Sets everywhere a task is mirrored, as the whole list, here first and then on the board.
+async function setMirrors(taskId, targets) {
   const task = findTask(taskId);
   if (!task) return;
   const before = task.mirrors || [];
   const last = Math.max(0, ...state.tasks.flatMap((t) => [t.position, ...(t.mirrors || []).map((m) => m.position)]));
-  task.mirrors = projectIds.map((id, i) => before.find((m) => m.project_id === id) || { project_id: id, position: last + 1000 * (i + 1) });
+  task.mirrors = targets.map((target, i) => before.find((m) => (target.task_id ? m.task_id === target.task_id : !m.task_id && m.project_id === target.project_id))
+    || { project_id: target.task_id ? findTask(target.task_id)?.project_id : target.project_id, task_id: target.task_id || null, position: last + 1000 * (i + 1) });
   renderBoard();
-  const saved = await write(() => state.store.setMirrors(taskId, projectIds), "That didn't save, so it has been undone. Check your connection and try again.");
+  const saved = await write(() => state.store.mirrorTask(taskId, targets), "That didn't save, so it has been undone. Check your connection and try again.");
   const now = findTask(taskId);
   if (!now) return;
   now.mirrors = saved.ok ? saved.result.mirrors : before;
@@ -1852,12 +1962,8 @@ function buildTaskWindow(w, task) {
     !isSubtask && el("div", { class: "field-row" },
       repeatField(),
       field("Project", el("select", { class: "input", "data-field": "project_id" }))),
-    // The other projects this task is mirrored into. It's one task: these only list it too.
-    !isSubtask && el("div", { class: "field", "data-mirrors": true },
-      el("span", { class: "label" }, "Also in these projects"),
-      el("ul", { class: "name-tags mirror-tags", "data-list": "mirrors" }),
-      el("select", { class: "input", "data-mirror-add": true, "aria-label": "Mirror this task into another project" }),
-      el("p", { class: "hint" }, "A mirrored task is one task. A change made from any of its projects shows in all of them.")),
+    // Where else this task is mirrored. It's one task: those places only show it too.
+    !isSubtask && (w.mirrorPicker = mirrorPicker(task.id)).root,
     columnField("progress", el("div", { class: "progress-wrap progress-wrap-large" },
       el("output", { class: "progress-label" }, "0%"),
       el("input", { class: "progress-range", type: "range", min: "0", max: "100", step: "5", "data-field": "progress" }))),
@@ -1956,7 +2062,7 @@ function renderTaskWindow(w) {
   }
   nameColumnFields(w.body, task.project_id);
   renderOwnFields(w, task);
-  renderMirrors(w, task);
+  w.mirrorPicker?.render();
   setFieldValue(w, "repeat", task.repeat || "none");
   const repeatNoteEl = w.body.querySelector("[data-repeat-note]");
   if (repeatNoteEl) repeatNoteEl.textContent = repeatNote(task);
@@ -1996,15 +2102,20 @@ function renderTaskWindow(w) {
       : el("span", { class: `meeting-answer answer-${m.status[1]}` }, m.status[0])))
     : [el("li", { class: "win-empty" }, `No meetings for this ${task.parent_id ? "subtask" : "task"} yet.`)]));
 
-  const subtasks = subtasksOf(task.id);
+  // Its own subtasks, then the tasks mirrored into it, which count as part of it. A
+  // mirrored one is a whole task that lives elsewhere: it says where, and opens as itself.
+  const held = new Set(heldBy(task.id).map((t) => t.id));
+  const subtasks = [...subtasksOf(task.id), ...heldBy(task.id)];
+  const from = (s) => (held.has(s.id) ? findProject(s.project_id)?.name || "" : null);
   setCount(w, "subtasks", subtasks.length ? `${subtasks.filter((s) => s.status === "done").length}/${subtasks.length}` : "");
-  renderList(w, "subtasks", subtasks.map((s) => [s.id, s.title, s.assignees, s.status, deadlineNote(s)?.text]), () =>
+  renderList(w, "subtasks", subtasks.map((s) => [s.id, s.title, s.assignees, s.status, deadlineNote(s)?.text, from(s)]), () =>
     subtasks.length ? subtasks.map((s) => {
       const due = deadlineNote(s);
-      return el("li", { class: "win-item" },
+      return el("li", { class: `win-item${held.has(s.id) ? " is-mirrored" : ""}` },
         el("input", { type: "checkbox", "data-done": s.id, checked: s.status === "done", "aria-label": `Mark ${s.title} done` }),
         el("span", { class: "win-item-main" },
           el("button", { class: `link-btn${s.status === "done" ? " subtask-done" : ""}`, type: "button", "data-open-task": s.id }, s.title)),
+        held.has(s.id) && el("span", { class: "mirror-from" }, `Mirrored from ${from(s)}`),
         s.assignees.length
           ? el("span", { class: "win-meta" }, s.assignees.join(", "))
           : el("button", { class: "link-btn win-meta", type: "button", "data-assign": s.id, "aria-label": `Assign ${s.title}` }, "Unassigned"),
@@ -2073,11 +2184,6 @@ function onWindowChange(w, event) {
   const control = event.target;
   if (control.dataset.custom) {
     saveOwnValue(w.taskId, control);
-  } else if (control.dataset.mirrorAdd !== undefined) {
-    const adding = control.value;
-    control.value = "";
-    control.blur(); // so the list of projects left to choose from can be redrawn
-    if (adding) setMirrors(w.taskId, [...(findTask(w.taskId)?.mirrors || []).map((m) => m.project_id), adding]);
   } else if (control.dataset.field) {
     const name = control.dataset.field;
     const value = fieldValue(control);
@@ -2148,8 +2254,6 @@ function onWindowClick(w, event) {
   const meeting = target.closest("[data-open-meeting]");
   if (meeting) return openMeeting(meeting.dataset.openMeeting);
   if (target.closest("[data-set-meeting]")) return openMeetingForm({ task: w.taskId });
-  const unmirror = target.closest("[data-unmirror]");
-  if (unmirror) return setMirrors(w.taskId, (findTask(w.taskId)?.mirrors || []).map((m) => m.project_id).filter((id) => id !== unmirror.dataset.unmirror));
   const assign = target.closest("[data-assign]");
   if (assign) return startAssigning(w, assign);
   const file = target.closest("[data-file]");

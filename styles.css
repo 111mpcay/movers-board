@@ -1206,10 +1206,25 @@ body::before {
 .win-foot { display: flex; align-items: center; gap: 8px; }
 .win-new-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-/* The projects a task is mirrored into, in its window: plain tags, not people's colors */
+/* Where a task is mirrored, in its window: a pill for each place, in plain colors rather
+   than people's, and a button that opens a small picker for the project, then the task. */
 .mirror-tags:empty { display: none; }
 .mirror-tags { margin-bottom: 6px; }
 .mirror-tag { color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); }
+.mirror-add { width: fit-content; padding: 3px 12px; font-size: 0.85rem; font-weight: 600; color: var(--muted); background: none; border: 1px dashed var(--line); border-radius: 999px; cursor: pointer; }
+.mirror-add:hover { color: var(--ink); border-color: var(--muted); }
+.mirror-picker { display: flex; flex-direction: column; gap: 7px; padding: 9px 10px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; }
+.mirror-prompt { font-size: 0.82rem; font-weight: 600; color: var(--muted); }
+.mirror-projects { margin-bottom: 0; }
+.mirror-choice, .mirror-tag.is-chosen { font: inherit; font-size: 0.86rem; background: var(--surface); cursor: pointer; }
+.mirror-choice:hover { border-color: var(--orange); }
+.mirror-tag.is-chosen { color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
+.mirror-picker .input { min-height: 36px; padding: 6px 9px; }
+.mirror-picker .task-options { background: var(--surface); }
+.mirror-picker .link-btn { width: fit-content; font-size: 0.85rem; }
+.mirror-list-option { border-top: 1px dashed var(--line); }
+/* A task mirrored into this one, listed with its subtasks */
+.mirror-from { flex: none; padding: 1px 8px; font-size: 0.74rem; font-weight: 600; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; }
 
 /* A project's own columns in a task's window, two to a line like the fields above them */
 .own-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
