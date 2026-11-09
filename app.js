@@ -339,6 +339,8 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     mirrorTask: (id, targets) => rpc("movers_mirror_task", { p_token: token, p_id: id, p_targets: targets }),
     addUpdate: (id, text, mentions) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text, p_mentions: mentions || [] }),
     addComment: (taskId, body, mentions) => rpc("movers_add_task_comment", { p_token: token, p_task_id: taskId, p_body: body, p_mentions: mentions }),
+    setReminder: (taskId, remindAt, note) => rpc("movers_set_reminder", { p_token: token, p_task_id: taskId, p_remind_at: remindAt, p_note: note }),
+    clearReminder: (taskId) => rpc("movers_clear_reminder", { p_token: token, p_task_id: taskId }),
     taskHistory: (taskId) => rpc("movers_task_history", { p_token: token, p_task_id: taskId }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
     saveProject: (id, name, color) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name, p_color: color }),
@@ -476,6 +478,7 @@ function showGate(message) {
   state.noticesSeen = null;
   state.deleted = [];
   state.people = [];
+  state.reminders = [];
   state.personColors = new Map();
   state.personColorsFor = "";
   state.version = -1;
@@ -535,10 +538,14 @@ async function rollTasks() {
 }
 
 // A meeting on this page has come within the hour since the board was last asked, so its
-// reminder is waiting to go out.
+// reminder is waiting to go out. Or the time has come for a reminder this person set for
+// themselves.
 const reminderIsDue = () => state.meetings.some((m) => {
   const start = nextOccurrence(m).getTime();
   return start > Date.now() && start - HOUR_MS <= Date.now() && state.lastRoll < start - HOUR_MS;
+}) || (state.reminders || []).some((r) => {
+  const at = Date.parse(r.remind_at);
+  return at <= Date.now() && state.lastRoll < at;
 });
 
 const rollIsDue = () => dayKey(new Date()) !== state.rolledDay || Date.now() - state.lastRoll > ROLL_MS || reminderIsDue();
@@ -1341,6 +1348,7 @@ async function refresh() {
         state.notifications = result.notifications || [];
         state.deleted = result.deleted || [];
         state.people = result.people || [];
+        state.reminders = result.reminders || [];
         announceNotices(state.notifications);
         renderBoard();
       }
@@ -1994,6 +2002,120 @@ function taskFold(name, heading, ...children) {
     el("div", { class: "win-fold-body" }, ...children));
 }
 
+// ---------- A reminder someone sets for themselves on a subtask ----------
+
+// A small drawn icon. It's made here rather than written into the page, since rows are.
+function icon(paths, size = 16) {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  const attrs = { viewBox: "0 0 24 24", width: size, height: size, fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false" };
+  for (const [name, value] of Object.entries(attrs)) svg.setAttribute(name, value);
+  for (const d of paths) {
+    const path = document.createElementNS(NS, "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+  }
+  return svg;
+}
+const CALENDAR_ICON = ["M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M4 10h16", "M8 3v4", "M16 3v4"];
+
+// Each person has their own reminders, and sees only those. One per subtask.
+const myReminder = (taskId) => (state.reminders || []).find((r) => r.task_id === taskId);
+const reminderWhen = (reminder) => `${formatDay(new Date(reminder.remind_at))}, ${formatTime(new Date(reminder.remind_at))}`;
+
+// The calendar icon on a subtask's row. It's lit while this person has a reminder waiting.
+function reminderButton(task) {
+  const mine = myReminder(task.id);
+  return el("button", {
+    class: `remind-btn${mine ? " is-set" : ""}`,
+    type: "button",
+    "data-remind": task.id,
+    title: mine ? `Your reminder: ${reminderWhen(mine)}. Press to change it` : "Remind me about this",
+    "aria-label": mine ? `Your reminder for ${task.title}, set for ${reminderWhen(mine)}. Press to change it` : `Remind me about ${task.title}`,
+  }, icon(CALENDAR_ICON));
+}
+
+// The small window for setting one: when, and a note to yourself. Opened again while one
+// is waiting, it shows that one, to change or take off.
+function openReminder(taskId) {
+  const task = findTask(taskId);
+  if (!task) return;
+  const key = `remind:${taskId}`;
+  let w = state.windows.get(key);
+  if (!w) {
+    w = createWindow(key, "Reminder");
+    w.remindFor = taskId;
+    w.width = Math.min(w.width, 400);
+    w.height = Math.min(w.height, 430);
+    placeWindow(w);
+    buildReminderForm(w, task);
+  }
+  showWindow(w);
+  w.body.querySelector('[data-input="date"]').focus();
+}
+
+function buildReminderForm(w, task) {
+  const mine = myReminder(task.id);
+  // To begin with: tomorrow morning at nine.
+  const start = mine ? new Date(mine.remind_at) : new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate() + 1, 9, 0);
+  const form = el("form", { class: "win-body", novalidate: true },
+    el("p", { class: "remind-for" }, task.parent_id ? "For the subtask " : "For the task ", el("strong", {}, task.title)),
+    el("div", { class: "field" },
+      el("span", { class: "label" }, "Remind me on:"),
+      el("div", { class: "field-row" },
+        el("input", { class: "input", type: "date", "aria-label": "Day to be reminded", "data-input": "date" }),
+        el("input", { class: "input", type: "time", "aria-label": "Time to be reminded", "data-input": "time" }))),
+    field("Note", el("textarea", { class: "input", rows: "3", maxlength: "500", placeholder: "What to remember (optional)", "data-input": "note" })),
+    el("p", { class: "hint" }, "You'll get a notification here at that time. Only you see this reminder."),
+    el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
+    el("div", { class: "win-new-actions" },
+      mine && el("button", { class: "btn btn-danger", type: "button", "data-clear-reminder": true }, "Remove reminder"),
+      el("button", { class: "btn btn-primary", type: "submit" }, mine ? "Save reminder" : "Set reminder")));
+  w.body.replaceWith(form);
+  w.body = form;
+  const input = (name) => form.querySelector(`[data-input="${name}"]`);
+  input("date").value = dayKey(start);
+  input("time").value = clockValue(start);
+  input("note").value = mine?.note || "";
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const [date, time] = [input("date").value, input("time").value];
+    if (!date || !time) {
+      showWindowError(w, "Choose a date and a time.");
+      return input(date ? "time" : "date").focus();
+    }
+    const when = new Date(`${date}T${time}`);
+    if (!(when > new Date())) {
+      showWindowError(w, "Choose a time that's still to come.");
+      return input("time").focus();
+    }
+    showWindowError(w, null);
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    const saved = await write(() => state.store.setReminder(task.id, when.toISOString(), input("note").value.trim()), null);
+    button.disabled = false;
+    if (!saved.ok) {
+      return showWindowError(w, saved.error?.code === "reminder_in_past" ? "Choose a time that's still to come." : "That reminder wasn't set. Check your connection and try again.");
+    }
+    // Shown at once, rather than when the next read arrives.
+    state.reminders = [...state.reminders.filter((r) => r.task_id !== task.id), saved.result];
+    closeWindow(w);
+    renderWindows();
+  });
+  form.addEventListener("click", async (event) => {
+    const clear = event.target.closest("[data-clear-reminder]");
+    if (!clear) return;
+    clear.disabled = true;
+    const result = await write(() => state.store.clearReminder(task.id), null);
+    clear.disabled = false;
+    if (!result.ok) return showWindowError(w, "That reminder wasn't removed. Check your connection and try again.");
+    state.reminders = state.reminders.filter((r) => r.task_id !== task.id);
+    closeWindow(w);
+    renderWindows();
+  });
+}
+
 // ---------- Comments, and mentioning people in them ----------
 
 // Everyone a comment can mention: the people the board knows, each once.
@@ -2351,7 +2473,7 @@ function renderTaskWindow(w) {
   const subtasks = [...subtasksOf(task.id), ...heldBy(task.id)];
   const from = (s) => (held.has(s.id) ? findProject(s.project_id)?.name || "" : null);
   setCount(w, "subtasks", subtasks.length ? `${subtasks.filter((s) => s.status === "done").length}/${subtasks.length}` : "");
-  renderList(w, "subtasks", subtasks.map((s) => [s.id, s.title, s.assignees, s.status, deadlineNote(s)?.text, from(s)]), () =>
+  renderList(w, "subtasks", subtasks.map((s) => [s.id, s.title, s.assignees, s.status, deadlineNote(s)?.text, from(s), myReminder(s.id)?.remind_at]), () =>
     subtasks.length ? subtasks.map((s) => {
       const due = deadlineNote(s);
       return el("li", { class: `win-item${held.has(s.id) ? " is-mirrored" : ""}` },
@@ -2362,7 +2484,9 @@ function renderTaskWindow(w) {
         s.assignees.length
           ? el("span", { class: "win-meta" }, s.assignees.join(", "))
           : el("button", { class: "link-btn win-meta", type: "button", "data-assign": s.id, "aria-label": `Assign ${s.title}` }, "Unassigned"),
-        due && el("span", { class: `due-note due-${due.tone}` }, due.text));
+        due && el("span", { class: `due-note due-${due.tone}` }, due.text),
+        // A reminder to yourself about this subtask. Not on a task that's only mirrored in.
+        !held.has(s.id) && reminderButton(s));
     }) : [el("li", { class: "win-empty" }, "No subtasks yet.")]);
 
   // Notes people wrote stay in view under Updates. History, a section of its own, has
@@ -2446,6 +2570,8 @@ function renderWindows() {
     }
     // A Columns window goes with its project.
     if (w.key === "columns" && !findProject(w.projectId)) closeWindow(w);
+    // A reminder's window goes with the subtask it's for.
+    if (w.remindFor && !findTask(w.remindFor)) closeWindow(w);
     if (!w.taskId) continue;
     if (findTask(w.taskId)) renderTaskWindow(w);
     else {
@@ -2530,6 +2656,8 @@ async function onWindowSubmit(w, event) {
 
 function onWindowClick(w, event) {
   const target = event.target;
+  const remind = target.closest("[data-remind]");
+  if (remind) return openReminder(remind.dataset.remind);
   const opener = target.closest("[data-open-task]");
   if (opener) return openTask(opener.dataset.openTask);
   const meeting = target.closest("[data-open-meeting]");
@@ -3813,6 +3941,8 @@ function notificationLines(n) {
     return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, n.action === "changed" ? `now ${when}` : when]];
   }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
+  // One this person set for themselves, with the note they wrote.
+  if (n.action === "reminder") return ["Reminder you set", where, n.detail ? `“${n.detail}”` : null];
   if (n.action === "mentioned" || n.action === "mentioned_update") {
     return [`${n.by_name} mentioned you in ${n.action === "mentioned" ? "a comment" : "an update"}`, where, `“${String(n.detail || "")}”`];
   }
@@ -3920,7 +4050,7 @@ function renderNotifications() {
           change && el("span", { class: "notify-task notify-change" }, change),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, reminders you set, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {

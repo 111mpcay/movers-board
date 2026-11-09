@@ -1222,6 +1222,12 @@ body::before {
 .win-upload input { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; }
 .win-upload:focus-within { outline: 2px solid var(--orange); outline-offset: 2px; }
 .win-uploading { font-style: italic; color: var(--muted); }
+/* The calendar icon on a subtask's row: a reminder to yourself. Lit while one is waiting. */
+.remind-btn { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; color: var(--muted); background: none; border: 0; border-radius: 6px; cursor: pointer; }
+.remind-btn:hover { color: var(--ink); background: var(--surface-2); }
+.remind-btn.is-set { color: var(--orange); }
+.remind-for { font-size: 0.9rem; color: var(--muted); overflow-wrap: anywhere; }
+.remind-for strong { color: var(--ink); }
 .win-remove { padding: 1px 6px; font-size: 0.8rem; color: var(--danger); background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
 .win-remove:hover, .win-remove.armed { background: var(--danger-bg); }
 .win-foot { display: flex; align-items: center; gap: 8px; }
