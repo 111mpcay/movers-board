@@ -1197,8 +1197,8 @@ body::before {
 .win-subheading { margin: 10px 0 4px; font-size: 0.8rem; font-weight: 700; color: var(--muted); }
 .win-subheading:first-child { margin-top: 0; }
 .win-count { margin-left: 6px; font-weight: 600; color: var(--muted); }
-.win-history { margin-top: 10px; }
-.win-history > summary { width: fit-content; font-size: 0.84rem; font-weight: 600; color: var(--muted); cursor: pointer; }
+/* In a task's History, an update someone posted reads a little stronger than a recorded change */
+.activity-posted { color: var(--ink); }
 .win-list { list-style: none; }
 .win-item {
   display: flex;

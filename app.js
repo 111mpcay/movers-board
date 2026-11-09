@@ -1977,7 +1977,7 @@ function openTask(id) {
 // open is the same for every task: as this person last left them on this device, and
 // before that, the parts worked on most (subtasks and updates) open and the rest folded.
 const FOLDS_KEY = "board.taskFolds";
-const FOLD_DEFAULTS = { info: false, subtasks: true, updates: true, comments: true, meetings: false, files: false };
+const FOLD_DEFAULTS = { info: false, subtasks: true, updates: true, comments: true, meetings: false, files: false, history: false };
 
 function foldStates() {
   try {
@@ -2165,10 +2165,7 @@ function buildTaskWindow(w, task) {
       el("form", { class: "win-form", "data-form": "update", novalidate: true },
         textInput({ maxlength: "1000", placeholder: "Add an update", "aria-label": "New update", "data-input": "text" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Post")),
-      el("ul", { class: "activity-list", "data-list": "updates" }),
-      el("details", { class: "win-history" },
-        el("summary", {}, "History", el("span", { class: "win-count", "data-count": "history" })),
-        el("ul", { class: "activity-list", "data-list": "history" }))),
+      el("ul", { class: "activity-list", "data-list": "updates" })),
     // What people say about it. Typing @ mentions someone, who is then told.
     taskFold("comments", ["Comments", count("comments")],
       commentForm(),
@@ -2193,6 +2190,10 @@ function buildTaskWindow(w, task) {
         textInput({ maxlength: "2000", placeholder: "Paste a link", "aria-label": "Link address", "data-input": "url", inputmode: "url" }),
         textInput({ class: "input is-narrow", maxlength: "255", placeholder: "Title (optional)", "aria-label": "Link title", "data-input": "title" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
+    // Everything that has happened to it, the newest first: each change the board recorded
+    // and each update someone posted. Folded away until it's wanted.
+    taskFold("history", ["History", count("history")],
+      el("ul", { class: "activity-list", "data-list": "history" })),
     // Deleting is offered to whoever created it. Everyone else is told who that is.
     el("div", { class: "win-foot" }, canDelete(task)
       ? el("button", { class: "btn btn-danger", type: "button", "data-delete-task": true }, isSubtask ? "Delete this subtask" : "Delete this task")
@@ -2339,19 +2340,23 @@ function renderTaskWindow(w) {
         due && el("span", { class: `due-note due-${due.tone}` }, due.text));
     }) : [el("li", { class: "win-empty" }, "No subtasks yet.")]);
 
-  // Notes people wrote stay in view. The automatic record of changes folds away under History.
+  // Notes people wrote stay in view under Updates. History, a section of its own, has
+  // everything the board has kept for this task: those notes and every change, newest first.
   const entries = [...(task.updates || [])].reverse();
   const notes = entries.filter((entry) => entry.kind === "note");
-  const history = entries.filter((entry) => entry.kind !== "note");
-  const entrySignature = (entry) => [entry.at, entry.by, entry.text, timeAgo(entry.at)];
+  const entrySignature = (entry) => [entry.at, entry.by, entry.kind, entry.text, timeAgo(entry.at)];
+  // How long ago, with the exact day and time on hover.
+  const when = (entry) => el("span", { class: "activity-time", title: new Date(entry.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }, timeAgo(entry.at));
   renderList(w, "updates", notes.map(entrySignature), () =>
     notes.length ? notes.map((entry) => el("li", {},
       el("strong", {}, entry.by), " ",
       el("span", { class: "activity-time" }, timeAgo(entry.at)),
       el("span", { class: "activity-note" }, entry.text))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
-  setCount(w, "history", `(${history.length})`);
-  renderList(w, "history", history.map(entrySignature), () => history.map((entry) =>
-    el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, el("span", { class: "activity-time" }, timeAgo(entry.at)))));
+  setCount(w, "history", entries.length ? String(entries.length) : "");
+  renderList(w, "history", entries.map(entrySignature), () => (entries.length ? entries.map((entry) => (entry.kind === "note"
+    ? el("li", { class: "activity-posted" }, `${entry.by} posted an update `, when(entry), el("span", { class: "activity-note" }, `“${entry.text}”`))
+    : el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, when(entry))))
+    : [el("li", { class: "win-empty" }, "Nothing has happened to it yet.")]));
 
   // Comments, the newest first, with the people each one mentions standing out.
   const comments = [...(task.comments || [])].reverse();
