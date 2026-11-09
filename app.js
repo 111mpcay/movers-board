@@ -570,6 +570,8 @@ function syncRoute() {
   state.projectId = exists ? id : null;
   const calendar = onCalendar();
   const people = onPeople();
+  // Coming to the Calendar from another page shows the week, whatever it showed last.
+  if (calendar && $("calendar-view").hidden) state.calendarView = "week";
   $("calendar-view").hidden = !calendar;
   $("people-view").hidden = !people;
   $("projects-view").hidden = calendar || people || !!state.projectId;
@@ -2801,9 +2803,12 @@ function renderWaitingBanner() {
 
 // ---------- My meetings: the calendar as a list ----------
 
-const CALENDAR_VIEW_KEY = "board.calendarView"; // "mine" on a device that last chose the list
+// The Calendar opens on the week, every time it's come to. The list is a look that lasts
+// until the Calendar is left, so the choice isn't kept, and one kept earlier is dropped.
+const CALENDAR_VIEW_KEY = "board.calendarView";
 const MY_ANSWER = { waiting: "Waiting for your answer", accepted: "You accepted", declined: "You declined" };
-state.calendarView = readStorage("localStorage", CALENDAR_VIEW_KEY) === "mine" ? "mine" : "week";
+writeStorage("localStorage", CALENDAR_VIEW_KEY, null);
+state.calendarView = "week";
 
 // Every meeting this person set or is invited to: what's still to come soonest first, then
 // what's over, latest first. Meetings other people set between themselves aren't here.
@@ -2858,7 +2863,6 @@ function renderMyMeetings() {
 
 function setCalendarView(view) {
   state.calendarView = view;
-  writeStorage("localStorage", CALENDAR_VIEW_KEY, view === "mine" ? "mine" : null);
   renderCalendar();
 }
 
@@ -3054,6 +3058,7 @@ function openMeeting(id) {
 function buildMeetingWindow(w) {
   w.body.append(
     el("span", { class: "meeting-status", "data-meeting-status": true }),
+    el("p", { class: "meeting-goal", "data-meeting-goal": true, hidden: true }),
     el("div", {},
       el("p", { class: "meeting-when", "data-meeting-when": true }),
       el("p", { class: "meeting-next", "data-meeting-next": true, hidden: true }),
@@ -3081,6 +3086,11 @@ function renderMeetingWindow(w) {
   const statusEl = w.body.querySelector("[data-meeting-status]");
   statusEl.textContent = status[0];
   statusEl.className = `meeting-status is-${status[1] === "accepted" ? "confirmed" : status[1]}`;
+
+  // What the meeting is for. One set before goals were asked for has none to show.
+  const goal = w.body.querySelector("[data-meeting-goal]");
+  goal.hidden = !m.goal;
+  goal.replaceChildren(...(m.goal ? [el("span", { class: "meeting-goal-label" }, "Goal"), m.goal] : []));
 
   const start = new Date(m.starts_at), end = new Date(m.ends_at);
   const day = repeats(m) ? capitalize(repeatPhrase(m.repeat, start)) : formatDay(start);
@@ -3213,7 +3223,7 @@ function openMeetingForm({ meeting = null, day = null, person = null, task = nul
   const fresh = !w;
   if (!w) {
     w = createWindow(key, meeting ? `Edit: ${meeting.title}` : "Set meeting");
-    w.height = Math.min(w.height, meeting ? 690 : 830);
+    w.height = Math.min(w.height, meeting ? 756 : 896);
     placeWindow(w);
     if (meeting) {
       w.meetingId = meeting.id;
@@ -3249,6 +3259,8 @@ function buildMeetingForm(w, meeting) {
   w.taskPicker = taskPicker(meeting?.task_id);
   const form = el("form", { class: "win-body", novalidate: true },
     field("Title", textInput({ maxlength: "200", "data-input": "title" })),
+    // What the meeting is for. Every meeting has to say, and the board checks it too.
+    field("Goal", textInput({ maxlength: "500", placeholder: "What should it decide or get done?", "data-input": "goal" })),
     field("Date", el("input", { class: "input", type: "date", "data-input": "date" })),
     el("div", { class: "field-row meeting-times" },
       field("Start", el("input", { class: "input", type: "time", "data-input": "start" })),
@@ -3275,6 +3287,7 @@ function buildMeetingForm(w, meeting) {
   const start = meeting && new Date(meeting.starts_at);
   const end = meeting && new Date(meeting.ends_at);
   input("title").value = meeting?.title || "";
+  input("goal").value = meeting?.goal || "";
   input("date").value = dayKey(start || new Date());
   input("start").value = start ? clockValue(start) : "09:00";
   input("end").value = end ? clockValue(end) : "10:00";
@@ -3307,12 +3320,18 @@ async function submitMeetingForm(w, meeting, event) {
   event.preventDefault();
   const form = w.body;
   const value = (name) => form.querySelector(`[data-input="${name}"]`).value.trim();
+  // The message shows down by the button, which going to the field scrolls away from, so
+  // the field is marked as well until something is typed in it.
   const fail = (message, name) => {
     showWindowError(w, message);
-    form.querySelector(`[data-input="${name}"]`).focus();
+    const box = form.querySelector(`[data-input="${name}"]`);
+    box.setAttribute("aria-invalid", "true");
+    box.addEventListener("input", () => box.removeAttribute("aria-invalid"), { once: true });
+    box.focus();
   };
-  const [title, date, start, end] = ["title", "date", "start", "end"].map(value);
+  const [title, goal, date, start, end] = ["title", "goal", "date", "start", "end"].map(value);
   if (!title) return fail("Give the meeting a title.", "title");
+  if (!goal) return fail("Give the meeting a goal.", "goal");
   if (!date) return fail("Choose a date.", "date");
   if (!start || !end) return fail("Choose a start and end time.", start ? "end" : "start");
   if (end <= start) return fail("The meeting has to end after it starts.", "end");
@@ -3320,6 +3339,7 @@ async function submitMeetingForm(w, meeting, event) {
 
   const fields = {
     title,
+    goal,
     starts_at: new Date(`${date}T${start}`).toISOString(),
     ends_at: new Date(`${date}T${end}`).toISOString(),
     place: value("place"),
@@ -3332,7 +3352,10 @@ async function submitMeetingForm(w, meeting, event) {
   button.disabled = true;
   const saved = await write(() => state.store.saveMeeting(meeting?.id ?? null, fields), null);
   button.disabled = false;
-  if (!saved.ok) return showWindowError(w, "That meeting didn't save. Check your connection and try again.");
+  if (!saved.ok) {
+    if (saved.error?.code === "meeting_goal_required") return fail("Give the meeting a goal.", "goal");
+    return showWindowError(w, "That meeting didn't save. Check your connection and try again.");
+  }
 
   const { x, y, width } = w;
   closeWindow(w);

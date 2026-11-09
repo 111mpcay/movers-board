@@ -164,6 +164,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 textarea.input { resize: vertical; }
 .input:focus-visible { outline-offset: 0; border-color: var(--orange); }
+/* A field a form couldn't be saved without */
+.input[aria-invalid="true"], .input[aria-invalid="true"]:focus-visible { border-color: var(--danger); outline-color: var(--danger); }
 
 .form-error {
   background: var(--danger-bg);
@@ -903,6 +905,9 @@ body::before {
 .meeting-status.is-confirmed { color: var(--ok-fg); background: var(--ok-bg); }
 .meeting-status.is-waiting { color: var(--warn-fg); background: var(--warn-bg); }
 .meeting-status.is-declined { color: var(--danger); background: var(--danger-bg); }
+/* What the meeting is for, set apart so it's the first thing read */
+.meeting-goal { padding: 8px 11px; border-left: 3px solid var(--orange); border-radius: 0 6px 6px 0; background: var(--surface-2); overflow-wrap: anywhere; }
+.meeting-goal-label { display: block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .meeting-when { font-weight: 700; }
 .meeting-next { font-size: 0.9rem; color: var(--muted); }
 .meeting-place { overflow-wrap: anywhere; }
