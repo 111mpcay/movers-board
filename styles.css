@@ -187,6 +187,11 @@ textarea.input { resize: vertical; }
 .btn-primary:hover:not(:disabled) { background: var(--orange-hover); }
 .btn-quiet { background: transparent; border-color: var(--line); }
 .btn-quiet:hover:not(:disabled) { background: var(--surface-2); }
+/* Offered when a newer version of the page has been published since this one loaded */
+.btn-update { color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
+.btn-update:hover:not(:disabled) { background: var(--navy-deep); border-color: var(--navy-deep); }
+.btn-update.armed { color: var(--on-orange); background: var(--orange); border-color: var(--orange); }
+.gate-update { margin-top: -8px; font-size: 0.88rem; text-align: center; color: var(--muted); }
 .btn-danger { background: transparent; color: var(--danger); padding-inline: 8px; }
 .btn-danger:hover:not(:disabled), .btn-danger.armed { background: var(--danger-bg); }
 .btn-wide { width: 100%; min-height: 46px; font-size: 1.02rem; }

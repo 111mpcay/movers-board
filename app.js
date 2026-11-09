@@ -84,7 +84,6 @@ const state = {
   windowEntryHref: history.state?.boardWindow ? location.href : null, // this history entry's address, if it was added for a phone's window
   notifyHasEntry: false, // whether the open notifications list has its own history entry
   windows: new Map(),
-  windowCount: 0,
   topZ: 100,
 };
 
@@ -1472,9 +1471,13 @@ function createWindow(key, title) {
   const grip = el("div", { class: "win-grip", "aria-hidden": "true" });
   const root = el("section", { class: "win", role: "dialog", "aria-label": title, tabindex: "-1" }, bar, body, grip);
 
-  const step = state.windowCount++ % 6;
+  // The first free place in the cascade, so a window opened with none open is always in
+  // the same spot, and two open at once don't sit exactly on top of each other.
+  const taken = new Set([...state.windows.values()].map((open) => open.step));
+  let step = 0;
+  while (taken.has(step) && step < 5) step += 1;
   const w = {
-    key, root, body, titleEl, chip: null,
+    key, root, body, titleEl, chip: null, step,
     x: 48 + step * 32,
     y: 70 + step * 28,
     width: 500,
@@ -1487,6 +1490,11 @@ function createWindow(key, title) {
 
   root.addEventListener("pointerdown", () => focusWindow(w));
   root.addEventListener("focusin", () => focusWindow(w));
+  // Whether anyone has done anything in it, for a form that isn't saved until it's sent.
+  const touched = () => { w.dirty = true; };
+  root.addEventListener("input", touched);
+  root.addEventListener("change", touched);
+  root.addEventListener("click", (event) => { if (event.target.closest(".win-body button:not([type='submit'])")) touched(); });
   root.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeWindow(w);
   });
@@ -1507,6 +1515,29 @@ function createWindow(key, title) {
 }
 
 window.addEventListener("resize", () => state.windows.forEach(placeWindow));
+
+// Something typed into a window that closing it would throw away: a form that's been
+// touched, or text in one of a task's add boxes that hasn't been sent.
+function hasUnsentTyping(w) {
+  if (w.body.tagName === "FORM") return !!w.dirty;
+  return [...w.body.querySelectorAll("[data-input], [data-assign-input]")].some((input) => input.value.trim());
+}
+
+// On a desktop, pressing anywhere outside the open windows closes them, as clicking away
+// from a dialog does. Nothing typed is lost: a field of the task that was being edited is
+// saved first, and a window holding something unsent stays open. Minimized windows stay in
+// the tray. A phone shows a window as a page of its own, with nothing outside it to press.
+document.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 || isPhone() || !state.windows.size) return;
+  if (event.target.closest?.(".win, #window-tray")) return;
+  // The page's own scrollbars aren't part of the page.
+  if (event.clientX >= document.documentElement.clientWidth || event.clientY >= document.documentElement.clientHeight) return;
+  const editing = document.activeElement;
+  if (editing?.closest?.(".win")) editing.blur(); // leaving a field is what saves it
+  for (const w of [...state.windows.values()]) {
+    if (!w.root.hidden && !hasUnsentTyping(w)) closeWindow(w);
+  }
+}, true);
 
 function field(label, control, ...rest) {
   return el("label", { class: "field" }, el("span", { class: "label" }, label), control, ...rest);
@@ -3438,6 +3469,87 @@ document.addEventListener("keydown", (event) => {
 });
 
 // ---------- Start ----------
+
+// ---------- A newer version of the board ----------
+
+// The page is a few files. When newer ones are published, a page that's already open keeps
+// running the old ones until it's reloaded, so it looks now and then and offers the update.
+// Every publish gives every file a new tag whether or not it changed, so a new tag only
+// means it's worth looking: what counts is whether the file is different from the copy this
+// page is running.
+const WATCHED_FILES = [location.pathname + location.search, "app.js", "styles.css"];
+const UPDATE_CHECK_MS = 5 * 60000;
+const UPDATE_LABEL = "Update available";
+const versions = new Map(); // file -> what this page runs, the tag last compared, and whether it has changed since
+let lastUpdateCheck = 0;
+
+const fileTag = (response) => (response.headers.get("etag") || response.headers.get("last-modified") || "").replace(/^W\//, "");
+function fingerprint(text) {
+  let hash = 2166136261;
+  for (let i = 0; i < text.length; i++) hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+  return `${text.length}:${hash >>> 0}`;
+}
+
+// What this page is running: the browser's own kept copies, which are the ones it loaded.
+async function noteRunningVersion() {
+  for (const file of WATCHED_FILES) {
+    try {
+      const response = await fetch(file, { cache: "force-cache" });
+      if (response.ok) versions.set(file, { running: fingerprint(await response.text()), tag: fileTag(response), outdated: false });
+    } catch { /* offline: this file isn't watched until the page is next loaded */ }
+  }
+}
+
+async function checkForUpdate() {
+  lastUpdateCheck = Date.now();
+  for (const [file, version] of versions) {
+    try {
+      const head = await fetch(file, { method: "HEAD", cache: "no-store" });
+      if (!head.ok) continue;
+      const tag = fileTag(head);
+      if (tag && tag === version.tag) continue; // nothing published since this file was last compared
+      const response = await fetch(file, { cache: "no-store" });
+      if (!response.ok) continue;
+      version.outdated = fingerprint(await response.text()) !== version.running;
+      version.tag = fileTag(response) || tag;
+    } catch { /* couldn't reach it: the next look will */ }
+  }
+  renderUpdateOffer();
+}
+
+function renderUpdateOffer() {
+  const ready = [...versions.values()].some((version) => version.outdated);
+  $("update-btn").hidden = !ready;
+  $("gate-update").hidden = !ready;
+}
+
+function reloadPage() {
+  location.reload();
+}
+
+// Loads the newer version. A form that's open and not yet saved would go with the reload,
+// so that's asked about first. The files are fetched fresh before reloading, or the
+// browser would reload from the copies it has kept and nothing would change.
+async function applyUpdate(button, label) {
+  const formOpen = [...state.windows.values()].some((w) => w.body.tagName === "FORM");
+  if (formOpen && !armButton(button, "A form is open. Update anyway?", label)) return;
+  button.disabled = true;
+  button.textContent = "Updating…";
+  await Promise.all([...WATCHED_FILES, "config.js"].map((file) => fetch(file, { cache: "reload" }).catch(() => null)));
+  reloadPage();
+}
+
+$("update-btn").addEventListener("click", () => applyUpdate($("update-btn"), UPDATE_LABEL));
+$("gate-update-btn").addEventListener("click", () => applyUpdate($("gate-update-btn"), "Update now"));
+
+const updateReady = noteRunningVersion().then(checkForUpdate);
+setInterval(() => {
+  if (!document.hidden && Date.now() - lastUpdateCheck >= UPDATE_CHECK_MS) checkForUpdate();
+}, 60000);
+// Coming back to the tab is when a waiting update is most worth knowing about.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && Date.now() - lastUpdateCheck >= 60000) checkForUpdate();
+});
 
 async function boot() {
   setUpDragging();
