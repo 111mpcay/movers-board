@@ -611,7 +611,21 @@ function renderProjectPage() {
   $("project-title").textContent = project.name;
   $("project-bar-fill").style.width = `${percent}%`;
   $("project-percent").textContent = `${percent}%`;
+  // Deleting is offered to whoever created the project. Everyone else is told who that is.
+  const mine = canDelete(project);
+  $("delete-project-btn").hidden = !mine;
+  $("delete-project-note").hidden = mine;
+  $("delete-project-note").textContent = mine ? "" : deleteNote(project, "project");
 }
+
+// Only whoever created a task or a project can delete it, and the board refuses anyone
+// else. Names are compared as the board compares them: capitals and the spaces around them
+// don't matter. A board that doesn't say yet who created a project decides for itself.
+const canDelete = (item) => item?.created_by === undefined || personKey(item.created_by) === personKey(state.name);
+const deleteNote = (item, what) => (personKey(item.created_by) === personKey(BOARD_ACTOR)
+  ? `This ${what} came with the board, so it can't be deleted.`
+  : `Only ${item.created_by}, who created this ${what}, can delete it.`);
+const refusedDelete = (result) => result.error?.code === "not_creator";
 
 function showProjectError(id, message) {
   $(id).textContent = message || "";
@@ -745,7 +759,7 @@ $("delete-project-btn").addEventListener("click", async () => {
   } else {
     state.leavingProject = null;
     going.forEach((w) => { w.deleting = false; });
-    showProjectError("project-error", "That project wasn't deleted. Check your connection and try again.");
+    showProjectError("project-error", refusedDelete(result) ? "Only whoever created this project can delete it." : "That project wasn't deleted. Check your connection and try again.");
   }
 });
 
@@ -2026,8 +2040,10 @@ function buildTaskWindow(w, task) {
         textInput({ maxlength: "2000", placeholder: "Paste a link", "aria-label": "Link address", "data-input": "url", inputmode: "url" }),
         textInput({ class: "input is-narrow", maxlength: "255", placeholder: "Title (optional)", "aria-label": "Link title", "data-input": "title" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
-    el("div", { class: "win-foot" },
-      el("button", { class: "btn btn-danger", type: "button", "data-delete-task": true }, isSubtask ? "Delete this subtask" : "Delete this task")),
+    // Deleting is offered to whoever created it. Everyone else is told who that is.
+    el("div", { class: "win-foot" }, canDelete(task)
+      ? el("button", { class: "btn btn-danger", type: "button", "data-delete-task": true }, isSubtask ? "Delete this subtask" : "Delete this task")
+      : el("p", { class: "delete-note", "data-delete-note": true }, deleteNote(task, isSubtask ? "subtask" : "task"))),
   ];
   w.body.append(...parts.filter(Boolean));
   w.body.querySelector('[data-fold="meetings"]').dataset.section = "meetings";
@@ -2438,7 +2454,8 @@ async function deleteTask(w, button) {
   } else {
     going.forEach((open) => { open.deleting = false; });
     button.disabled = false;
-    showWindowError(w, "That task wasn't deleted. Check your connection and try again.");
+    const what = findTask(id)?.parent_id ? "subtask" : "task";
+    showWindowError(w, refusedDelete(result) ? `Only whoever created this ${what} can delete it.` : `That ${what} wasn't deleted. Check your connection and try again.`);
   }
 }
 

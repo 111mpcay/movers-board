@@ -1215,6 +1215,8 @@ body::before {
 .win-remove { padding: 1px 6px; font-size: 0.8rem; color: var(--danger); background: none; border: 1px solid transparent; border-radius: 4px; cursor: pointer; }
 .win-remove:hover, .win-remove.armed { background: var(--danger-bg); }
 .win-foot { display: flex; align-items: center; gap: 8px; }
+/* In place of a delete button, for everyone but whoever created the task or the project. */
+.delete-note { font-size: 0.84rem; color: var(--muted); }
 .win-new-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* Where a task is mirrored, in its window: a pill for each place, in plain colors rather
