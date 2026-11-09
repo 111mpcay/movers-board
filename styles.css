@@ -230,6 +230,12 @@ textarea.input { resize: vertical; }
 .gate-body { display: flex; flex-direction: column; gap: 20px; padding: 22px 28px 28px; }
 .gate-intro { color: var(--muted); }
 
+/* A choice with its explanation under it, like Remember this device. */
+.check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.check input { flex: none; width: 18px; height: 18px; margin: 1px 0 0; accent-color: var(--orange); cursor: pointer; }
+.check-text { font-weight: 600; font-size: 0.86rem; }
+.check-text .hint { display: block; margin-top: 2px; font-weight: 400; }
+
 .pin-boxes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .pin-box {
   width: 100%;

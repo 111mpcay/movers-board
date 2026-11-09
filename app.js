@@ -96,6 +96,28 @@ function writeStorage(area, key, value) {
   } catch { /* private window: the page still works, it just won't remember */ }
 }
 
+// Where this person's session is kept. Normally only this tab has it, so closing the
+// browser means entering the PIN again. On a remembered device it's kept on the device,
+// and the board keeps it good for as long as the device is in use: 30 days without
+// opening the board, and it ends.
+function saveSession(token, name, remember) {
+  clearSession();
+  writeStorage(remember ? "localStorage" : "sessionStorage", SESSION_KEY, JSON.stringify({ token, name }));
+}
+function savedSession() {
+  for (const area of ["localStorage", "sessionStorage"]) {
+    try {
+      const saved = JSON.parse(readStorage(area, SESSION_KEY));
+      if (saved?.token) return saved;
+    } catch { /* start fresh */ }
+  }
+  return null;
+}
+function clearSession() {
+  writeStorage("localStorage", SESSION_KEY, null);
+  writeStorage("sessionStorage", SESSION_KEY, null);
+}
+
 function parseDate(iso) {
   const [y, m, d] = iso.split("-").map(Number);
   return new Date(y, m - 1, d);
@@ -231,7 +253,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
   return {
     isDemo: false,
     setToken(value) { token = value; },
-    enter: (pin, name) => rpc("movers_enter_board", { p_pin: pin, p_name: name }),
+    enter: (pin, name, remember) => rpc("movers_enter_board", { p_pin: pin, p_name: name, p_remember: remember === true }),
     list: (version) => rpc("movers_list_tasks", { p_token: token, p_version: version }),
     // Sends only the fields that changed, so two people editing different
     // fields of the same task don't overwrite each other.
@@ -326,16 +348,17 @@ $("gate-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const pin = pinInputs.map((input) => input.value).join("");
   const name = $("name-input").value.trim();
+  const remember = $("remember-device").checked;
   if (pin.length < 4) return showGateError("Enter all 4 digits of the PIN.", pinInputs[pin.length]);
   if (!name) return showGateError("Enter your name so the team can see who changed what.", $("name-input"));
 
   $("gate-error").hidden = true;
   $("gate-submit").disabled = true;
   try {
-    const result = await state.store.enter(pin, name);
+    const result = await state.store.enter(pin, name, remember);
     if (result.ok) {
       writeStorage("localStorage", NAME_KEY, result.name);
-      writeStorage("sessionStorage", SESSION_KEY, JSON.stringify({ token: result.token, name: result.name }));
+      saveSession(result.token, result.name, remember);
       clearPin();
       await startBoard(result.token, result.name);
     } else if (result.error === "wrong_pin") {
@@ -356,7 +379,7 @@ $("gate-form").addEventListener("submit", async (event) => {
 
 function showGate(message) {
   stopPolling();
-  writeStorage("sessionStorage", SESSION_KEY, null);
+  clearSession();
   closeAllWindows();
   closeNotifications();
   setFilterOpen(false);
@@ -386,6 +409,7 @@ function showGate(message) {
   $("board-view").hidden = true;
   $("gate").hidden = false;
   $("name-input").value = readStorage("localStorage", NAME_KEY) || "";
+  $("remember-device").checked = false;
   clearPin();
   if (message) showGateError(message);
   else $("gate-error").hidden = true;
@@ -2771,9 +2795,8 @@ async function boot() {
   }
   $("name-input").value = readStorage("localStorage", NAME_KEY) || "";
 
-  let saved = null;
-  try { saved = JSON.parse(readStorage("sessionStorage", SESSION_KEY)); } catch { /* start fresh */ }
-  if (saved?.token) await startBoard(saved.token, saved.name);
+  const saved = savedSession();
+  if (saved) await startBoard(saved.token, saved.name);
   else pinInputs[0].focus();
 }
 
