@@ -893,6 +893,8 @@ body::before {
 }
 .week-chip:hover { box-shadow: 0 2px 6px rgb(23 48 74 / 0.35); }
 .week-chip.is-waiting { color: var(--warn-fg); background: var(--surface); border: 1px dashed var(--orange); }
+/* Completed: still on its day, set back so what's still to do stands out */
+.week-chip.is-done { color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); }
 .week-chip-time { display: block; font-weight: 700; font-variant-numeric: tabular-nums; }
 .week-chip-repeat { margin-left: 5px; font-weight: 400; }
 .week-legend .week-chip-repeat { margin: 0 3px 0 0; font-size: 1rem; color: var(--ink); }
@@ -905,6 +907,8 @@ body::before {
 .meeting-status.is-confirmed { color: var(--ok-fg); background: var(--ok-bg); }
 .meeting-status.is-waiting { color: var(--warn-fg); background: var(--warn-bg); }
 .meeting-status.is-declined { color: var(--danger); background: var(--danger-bg); }
+.meeting-status.is-done { color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); }
+.meeting-completed { font-size: 0.86rem; color: var(--muted); }
 /* What the meeting is for, set apart so it's the first thing read */
 .meeting-goal { padding: 8px 11px; border-left: 3px solid var(--orange); border-radius: 0 6px 6px 0; background: var(--surface-2); overflow-wrap: anywhere; }
 .meeting-goal-label { display: block; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
@@ -928,8 +932,8 @@ body::before {
 .mine-meta { display: block; margin-top: 1px; font-size: 0.8rem; font-weight: 400; color: var(--muted); }
 .mine-row.is-past .mine-title { font-weight: 500; color: var(--muted); }
 .mine-row.is-past .meeting-answer { font-weight: 500; color: var(--muted); }
-.mine-past { margin-top: 14px; }
-.mine-past > summary { width: fit-content; margin-bottom: 8px; font-size: 0.88rem; font-weight: 600; color: var(--muted); cursor: pointer; }
+.mine-past, .mine-done { margin-top: 14px; }
+.mine-past > summary, .mine-done > summary { width: fit-content; margin-bottom: 8px; font-size: 0.88rem; font-weight: 600; color: var(--muted); cursor: pointer; }
 /* Too narrow for three across: when it is goes above what it is. */
 @media (max-width: 700px) {
   .mine-row { grid-template-columns: minmax(0, 1fr) auto; }
@@ -940,6 +944,7 @@ body::before {
 .answer-accepted { color: var(--ok-fg); }
 .answer-declined { color: var(--danger); }
 .answer-waiting { color: var(--warn-fg); }
+.answer-done { color: var(--muted); }
 .meeting-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .meeting-actions:empty { display: none; }
 .btn-accept { color: var(--on-green); background: var(--green); }

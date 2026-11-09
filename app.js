@@ -352,6 +352,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     addMeetingPerson: (id, name) => rpc("movers_add_meeting_person", { p_token: token, p_id: id, p_name: name }),
     removeMeetingPerson: (id, name) => rpc("movers_remove_meeting_person", { p_token: token, p_id: id, p_name: name }),
     cancelMeeting: (id) => rpc("movers_cancel_meeting", { p_token: token, p_id: id }),
+    completeMeeting: (id, done) => rpc("movers_complete_meeting", { p_token: token, p_id: id, p_done: done }),
     async uploadFile(taskId, file) {
       const { path, upload_url: uploadUrl } = await fileService("upload", { task_id: taskId });
       const res = await fetch(uploadUrl, {
@@ -2148,12 +2149,14 @@ function renderTaskWindow(w) {
   const now = new Date();
   const meetings = state.meetings.filter((m) => m.task_id === task.id).map((m) => {
     const first = new Date(m.starts_at);
-    const past = !repeats(m) && new Date(m.ends_at) <= now;
+    const done = isCompleted(m);
+    // A completed meeting goes with the ones that are over.
+    const past = done || (!repeats(m) && new Date(m.ends_at) <= now);
     const at = repeats(m) ? nextOccurrence(m, now) : first;
     const when = repeats(m)
-      ? `${capitalize(repeatPhrase(m.repeat, first))}, ${formatTime(first)} · next ${formatDay(at)}`
+      ? `${capitalize(repeatPhrase(m.repeat, first))}, ${formatTime(first)}${done ? "" : ` · next ${formatDay(at)}`}`
       : `${formatDay(first)}, ${formatTime(first)}`;
-    return { id: m.id, title: m.title, when, past, at: at.getTime(), status: meetingStatus(m) };
+    return { id: m.id, title: m.title, when, past, done, at: at.getTime(), status: meetingStatus(m) };
   }).sort((a, b) => a.past - b.past || (a.past ? b.at - a.at : a.at - b.at));
   setCount(w, "meetings", meetings.length ? String(meetings.length) : "");
   renderList(w, "meetings", meetings, () => (meetings.length ? meetings.map((m) => el("li", { class: `win-item${m.past ? " is-past" : ""}` },
@@ -2161,7 +2164,7 @@ function renderTaskWindow(w) {
       el("button", { class: "link-btn", type: "button", "data-open-meeting": m.id }, m.title)),
     el("span", { class: "win-meta" }, m.when),
     m.past
-      ? el("span", { class: "win-meta" }, "Past")
+      ? el("span", { class: "win-meta" }, m.done ? "Completed" : "Past")
       : el("span", { class: `meeting-answer answer-${m.status[1]}` }, m.status[0])))
     : [el("li", { class: "win-empty" }, `No meetings for this ${task.parent_id ? "subtask" : "task"} yet.`)]));
 
@@ -2701,8 +2704,11 @@ const isOrganizer = (m) => personKey(m.created_by) === personKey(state.name);
 const myInvite = (m) => m.people.find((p) => p.name_key === personKey(state.name));
 const isConfirmed = (m) => !m.people.length || m.people.some((p) => p.answer === "accepted");
 const byStart = (a, b) => new Date(a.starts_at) - new Date(b.starts_at);
+// Whoever set a meeting can mark it completed once it's done with. It stays on the week,
+// marked as completed, and leaves what's waiting for an answer and My meetings.
+const isCompleted = (m) => !!m.completed_at;
 // Where a meeting stands, in words, and the name of the color that goes with it.
-const meetingStatus = (m) => (isConfirmed(m) ? ["Confirmed", "accepted"]
+const meetingStatus = (m) => (isCompleted(m) ? ["Completed", "done"] : isConfirmed(m) ? ["Confirmed", "accepted"]
   : m.people.every((p) => p.answer === "declined") ? ["Everyone declined", "declined"] : ["Waiting for answers", "waiting"]);
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 const ordinal = (n) => n + (n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] || "th");
@@ -2769,11 +2775,11 @@ function chipStyle(m, key) {
 }
 
 // The meetings waiting for this person's own answer, soonest first. A repeating meeting
-// never ends, so it keeps asking until it's answered.
+// never ends, so it keeps asking until it's answered, or completed.
 function waitingInvites() {
   const now = new Date();
   return state.meetings
-    .filter((m) => myInvite(m)?.answer === "waiting" && (repeats(m) || new Date(m.ends_at) > now))
+    .filter((m) => !isCompleted(m) && myInvite(m)?.answer === "waiting" && (repeats(m) || new Date(m.ends_at) > now))
     .map((m) => ({ m, at: nextOccurrence(m, now) }))
     .sort((a, b) => a.at - b.at);
 }
@@ -2816,6 +2822,7 @@ function renderMyMeetings() {
   const now = new Date();
   const mine = state.meetings.filter((m) => isOrganizer(m) || myInvite(m)).map((m) => {
     const first = new Date(m.starts_at);
+    const done = isCompleted(m);
     const past = !repeats(m) && new Date(m.ends_at) <= now;
     const at = repeats(m) ? nextOccurrence(m, now) : first;
     const invite = !isOrganizer(m) && myInvite(m);
@@ -2824,9 +2831,11 @@ function renderMyMeetings() {
       id: m.id,
       title: m.title,
       past,
+      done,
+      doneAt: done ? Date.parse(m.completed_at) : 0,
       at: at.getTime(),
       when: repeats(m)
-        ? `${capitalize(repeatPhrase(m.repeat, first))}, ${formatTime(first)} · next ${formatDay(at)}`
+        ? `${capitalize(repeatPhrase(m.repeat, first))}, ${formatTime(first)}${done ? "" : ` · next ${formatDay(at)}`}`
         : `${formatDay(first)}, ${formatTime(first)} to ${formatTime(new Date(m.ends_at))}`,
       // Where it stands for this person: their own answer, or how their own meeting is doing.
       status: invite ? [MY_ANSWER[invite.answer], invite.answer] : meetingStatus(m),
@@ -2837,27 +2846,34 @@ function renderMyMeetings() {
       ].filter(Boolean).join(" · "),
     };
   });
-  const upcoming = mine.filter((m) => !m.past).sort((a, b) => a.at - b.at);
-  const past = mine.filter((m) => m.past).sort((a, b) => b.at - a.at);
+  // A completed meeting is out of both lists. It's kept in a group of its own at the end,
+  // the latest completed first, so it can still be found and reopened.
+  const upcoming = mine.filter((m) => !m.done && !m.past).sort((a, b) => a.at - b.at);
+  const past = mine.filter((m) => !m.done && m.past).sort((a, b) => b.at - a.at);
+  const completed = mine.filter((m) => m.done).sort((a, b) => b.doneAt - a.doneAt);
 
-  // Only rebuilds when something shows differently, so Past stays open across a refresh.
+  // Only rebuilds when something shows differently, so a group stays open across a refresh.
   const box = $("my-meetings");
-  const signature = JSON.stringify([upcoming, past]);
+  const signature = JSON.stringify([upcoming, past, completed]);
   if (box.dataset.sig === signature) return;
   const pastOpen = !!box.querySelector(".mine-past")?.open;
+  const doneOpen = !!box.querySelector(".mine-done")?.open;
   box.dataset.sig = signature;
   const row = (m) => el("li", {},
-    el("button", { class: `mine-row${m.past ? " is-past" : ""}`, type: "button", "data-meeting": m.id, "data-at": m.at },
+    el("button", { class: `mine-row${m.past || m.done ? " is-past" : ""}`, type: "button", "data-meeting": m.id, "data-at": m.at },
       el("span", { class: "mine-when" }, m.when),
       el("span", { class: "mine-title" }, m.title, m.meta && el("span", { class: "mine-meta" }, m.meta)),
-      el("span", { class: `meeting-answer answer-${m.status[1]}` }, m.past ? "Past" : m.status[0])));
+      el("span", { class: `meeting-answer answer-${m.done ? "done" : m.status[1]}` }, m.done ? "Completed" : m.past ? "Past" : m.status[0])));
   box.replaceChildren(...[
     upcoming.length
       ? el("ul", { class: "mine-list", "data-list": "upcoming" }, ...upcoming.map(row))
-      : el("p", { class: "win-empty" }, past.length ? "Nothing coming up." : "You have no meetings yet. Set one with Set meeting, or wait for an invite."),
+      : el("p", { class: "win-empty" }, past.length || completed.length ? "Nothing coming up." : "You have no meetings yet. Set one with Set meeting, or wait for an invite."),
     past.length > 0 && el("details", { class: "mine-past", open: pastOpen },
       el("summary", {}, `Past (${past.length})`),
       el("ul", { class: "mine-list", "data-list": "past" }, ...past.map(row))),
+    completed.length > 0 && el("details", { class: "mine-done", open: doneOpen },
+      el("summary", {}, `Completed (${completed.length})`),
+      el("ul", { class: "mine-list", "data-list": "completed" }, ...completed.map(row))),
   ].filter(Boolean));
 }
 
@@ -2897,9 +2913,11 @@ function renderCalendar() {
   const me = personKey(state.name);
   const today = dayKey(new Date());
   // What's on each day, in order of time: one-time meetings, and this week's turn of repeating ones.
+  // A completed meeting that repeats shows the times it was on, and none after the day it
+  // was completed.
   const onDay = days.map((date) => state.meetings
     .map((m) => ({ m, at: occurrenceOn(m, date) }))
-    .filter(({ at }) => at)
+    .filter(({ m, at }) => at && !(isCompleted(m) && repeats(m) && dayKey(date) > dayKey(new Date(m.completed_at))))
     .sort((a, b) => a.at - b.at || byStart(a.m, b.m)));
   const rows = calendarPeople().map((person) => ({
     ...person,
@@ -2911,7 +2929,8 @@ function renderCalendar() {
         repeat: repeats(m) ? repeatPhrase(m.repeat, new Date(m.starts_at)) : null,
         task: findTask(m.task_id)?.title ?? null,
         style: chipStyle(m, person.key),
-        movable: isOrganizer(m), // the person who set a meeting can drag it to another day
+        done: isCompleted(m),
+        movable: isOrganizer(m) && !isCompleted(m), // the person who set a meeting can drag it to another day, until it's completed
       }))
       .filter((chip) => chip.style)),
   }));
@@ -2937,13 +2956,14 @@ function renderCalendar() {
           "aria-label": `Set a meeting${row.key === me ? "" : ` with ${row.name}`} on ${formatDay(days[i])}`,
         }),
         ...chips.map((chip) => el("button", {
-          class: `week-chip${chip.style === "wait" ? " is-waiting" : ""}${chip.movable ? " is-movable" : ""}`,
+          class: `week-chip${chip.done ? " is-done" : chip.style === "wait" ? " is-waiting" : ""}${chip.movable ? " is-movable" : ""}`,
           type: "button",
           "data-meeting": chip.id,
-          title: `${chip.time} ${chip.title}${chip.repeat ? ` (${chip.repeat})` : ""}${chip.task ? ` · Task: ${chip.task}` : ""}${chip.movable ? " · Drag to another day to move it" : ""}`,
-          "aria-label": (chip.repeat || chip.task) && [`${chip.time} ${chip.title}`, chip.repeat, chip.task && `for the task ${chip.task}`].filter(Boolean).join(", "),
+          title: `${chip.time} ${chip.title}${chip.repeat ? ` (${chip.repeat})` : ""}${chip.task ? ` · Task: ${chip.task}` : ""}${chip.done ? " · Completed" : ""}${chip.movable ? " · Drag to another day to move it" : ""}`,
+          "aria-label": (chip.repeat || chip.task || chip.done) && [`${chip.time} ${chip.title}`, chip.repeat, chip.task && `for the task ${chip.task}`, chip.done && "completed"].filter(Boolean).join(", "),
         },
-          el("span", { class: "week-chip-time" }, chip.time, chip.repeat && el("span", { class: "week-chip-repeat", "aria-hidden": "true" }, "↻")),
+          el("span", { class: "week-chip-time" }, chip.time, chip.repeat && el("span", { class: "week-chip-repeat", "aria-hidden": "true" }, "↻"),
+            chip.done && el("span", { class: "week-chip-repeat", "aria-hidden": "true" }, "✓")),
           chip.title)))))));
 
   setUpMeetingDragging(grid);
@@ -3058,6 +3078,7 @@ function openMeeting(id) {
 function buildMeetingWindow(w) {
   w.body.append(
     el("span", { class: "meeting-status", "data-meeting-status": true }),
+    el("p", { class: "meeting-completed", "data-meeting-completed": true, hidden: true }),
     el("p", { class: "meeting-goal", "data-meeting-goal": true, hidden: true }),
     el("div", {},
       el("p", { class: "meeting-when", "data-meeting-when": true }),
@@ -3087,6 +3108,14 @@ function renderMeetingWindow(w) {
   statusEl.textContent = status[0];
   statusEl.className = `meeting-status is-${status[1] === "accepted" ? "confirmed" : status[1]}`;
 
+  // Once it's completed: who by, and when.
+  const done = isCompleted(m);
+  const completed = w.body.querySelector("[data-meeting-completed]");
+  completed.hidden = !done;
+  completed.textContent = done
+    ? `Completed by ${personKey(m.completed_by) === personKey(state.name) ? "you" : m.completed_by} on ${formatDay(new Date(m.completed_at))}`
+    : "";
+
   // What the meeting is for. One set before goals were asked for has none to show.
   const goal = w.body.querySelector("[data-meeting-goal]");
   goal.hidden = !m.goal;
@@ -3096,8 +3125,8 @@ function renderMeetingWindow(w) {
   const day = repeats(m) ? capitalize(repeatPhrase(m.repeat, start)) : formatDay(start);
   w.body.querySelector("[data-meeting-when]").textContent = `${day}, ${formatTime(start)} to ${formatTime(end)}`;
   const next = w.body.querySelector("[data-meeting-next]");
-  next.hidden = !repeats(m);
-  next.textContent = repeats(m) ? `Next: ${formatDay(nextOccurrence(m))}` : "";
+  next.hidden = !repeats(m) || done;
+  next.textContent = repeats(m) && !done ? `Next: ${formatDay(nextOccurrence(m))}` : "";
   const place = w.body.querySelector("[data-meeting-place]");
   place.hidden = !m.place;
   place.replaceChildren(/^https?:\/\/\S+$/i.test(m.place)
@@ -3133,15 +3162,18 @@ function renderMeetingWindow(w) {
       el("span", { class: `meeting-answer answer-${p.answer}` }, ANSWER[p.answer]),
       organizer && el("button", { class: "win-remove", type: "button", "data-remove-person": p.name, "aria-label": `Remove ${p.name}` }, "Remove"))),
   ]);
-  w.body.querySelector('[data-form="add-person"]').hidden = !(organizer || mine);
+  w.body.querySelector('[data-form="add-person"]').hidden = !(organizer || mine) || done;
 
-  renderList(w, "actions", [organizer, mine?.answer], () => [
-    mine?.answer === "waiting" && el("button", { class: "btn btn-accept", type: "button", "data-answer": "accepted" }, "Accept"),
-    mine?.answer === "waiting" && el("button", { class: "btn btn-decline", type: "button", "data-answer": "declined" }, "Decline"),
-    mine?.answer === "accepted" && el("span", { class: "win-meta" }, "You accepted. ",
+  // A completed meeting has nothing left to answer. Whoever set it can reopen it.
+  renderList(w, "actions", [organizer, mine?.answer, done], () => [
+    !done && mine?.answer === "waiting" && el("button", { class: "btn btn-accept", type: "button", "data-answer": "accepted" }, "Accept"),
+    !done && mine?.answer === "waiting" && el("button", { class: "btn btn-decline", type: "button", "data-answer": "declined" }, "Decline"),
+    !done && mine?.answer === "accepted" && el("span", { class: "win-meta" }, "You accepted. ",
       el("button", { class: "link-btn", type: "button", "data-answer": "declined" }, "Change to declined")),
-    mine?.answer === "declined" && el("span", { class: "win-meta" }, "You declined. ",
+    !done && mine?.answer === "declined" && el("span", { class: "win-meta" }, "You declined. ",
       el("button", { class: "link-btn", type: "button", "data-answer": "accepted" }, "Change to accepted")),
+    organizer && !done && el("button", { class: "btn btn-accept", type: "button", "data-complete-meeting": true }, "Complete meeting"),
+    organizer && done && el("button", { class: "btn btn-quiet", type: "button", "data-reopen-meeting": true }, "Reopen"),
     organizer && el("button", { class: "btn btn-quiet", type: "button", "data-edit-meeting": true }, "Edit"),
     organizer && el("button", { class: "btn btn-danger", type: "button", "data-cancel-meeting": true }, "Cancel meeting"),
   ].filter(Boolean));
@@ -3158,6 +3190,25 @@ function onMeetingClick(w, event) {
   if (target.closest("[data-edit-meeting]")) return openMeetingForm({ meeting: findMeeting(w.meetingId) });
   const cancel = target.closest("[data-cancel-meeting]");
   if (cancel) return cancelMeeting(w, cancel);
+  const complete = target.closest("[data-complete-meeting], [data-reopen-meeting]");
+  if (complete) return completeMeeting(w, complete, complete.hasAttribute("data-complete-meeting"));
+}
+
+// Completing a meeting takes it out of what's waiting for an answer and out of My meetings,
+// for everyone in it. It takes one click, since Reopen puts it back.
+async function completeMeeting(w, button, done) {
+  button.disabled = true;
+  const result = await write(() => state.store.completeMeeting(w.meetingId, done), null);
+  if (!w.root.isConnected) return;
+  button.disabled = false;
+  if (!result.ok) {
+    return showWindowError(w, `That meeting wasn't ${done ? "completed" : "reopened"}. Check your connection and try again.`);
+  }
+  // Shown at once, rather than when the next read arrives.
+  const meeting = findMeeting(w.meetingId);
+  if (meeting && result.result) Object.assign(meeting, { completed_at: result.result.completed_at ?? null, completed_by: result.result.completed_by ?? null });
+  showWindowError(w, null);
+  renderBoard();
 }
 
 async function answerMeeting(w, button) {
