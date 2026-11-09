@@ -61,7 +61,7 @@
           <span class="wordmark wordmark-small">Movers Board</span>
           <nav class="topnav" aria-label="Sections">
             <a id="nav-projects" class="topnav-link" href="#">Projects</a>
-            <a id="nav-calendar" class="topnav-link" href="#calendar">Calendar</a>
+            <a id="nav-calendar" class="topnav-link" href="#calendar">Calendar<span id="calendar-count" class="notify-count" hidden></span></a>
             <a id="nav-people" class="topnav-link" href="#people">People</a>
           </nav>
           <span id="summary" class="summary"></span>
@@ -192,7 +192,14 @@
         <h1 id="week-title" class="page-title"></h1>
         <button id="week-next" class="btn btn-quiet btn-small" type="button" aria-label="Next week">›</button>
         <button id="week-today" class="btn btn-quiet btn-small" type="button">Today</button>
+        <span class="spacer"></span>
+        <div class="view-switch" role="group" aria-label="How the calendar shows">
+          <button id="view-week" class="btn btn-quiet btn-small" type="button" aria-pressed="true">Week</button>
+          <button id="view-mine" class="btn btn-quiet btn-small" type="button" aria-pressed="false">My meetings</button>
+        </div>
       </div>
+      <!-- My meetings: every meeting this person set or is invited to, as a list -->
+      <div id="my-meetings" class="my-meetings" hidden></div>
       <div class="week-scroll">
         <div id="week-grid" class="week-grid" role="table" aria-label="Meetings this week, by person"></div>
       </div>

@@ -445,6 +445,9 @@ function showGate(message) {
   $("week-grid").replaceChildren();
   delete $("week-grid").dataset.sig;
   delete $("week-grid").dataset.week;
+  $("my-meetings").replaceChildren();
+  delete $("my-meetings").dataset.sig;
+  $("calendar-count").hidden = true;
   $("people-cards").replaceChildren();
   delete $("people-cards").dataset.sig;
   $("today-list").replaceChildren();
@@ -1005,6 +1008,7 @@ function renderBoard() {
   renderRows();
   renderSummary();
   renderPeople();
+  renderCalendarCount();
   renderCalendar();
   renderPeoplePage();
   renderToday();
@@ -2452,13 +2456,27 @@ function chipStyle(m, key) {
   return isOrganizer(m) || myInvite(m) ? "wait" : null;
 }
 
-function renderWaitingBanner() {
-  // A repeating meeting never ends, so it keeps asking until it's answered.
+// The meetings waiting for this person's own answer, soonest first. A repeating meeting
+// never ends, so it keeps asking until it's answered.
+function waitingInvites() {
   const now = new Date();
-  const waiting = state.meetings
+  return state.meetings
     .filter((m) => myInvite(m)?.answer === "waiting" && (repeats(m) || new Date(m.ends_at) > now))
     .map((m) => ({ m, at: nextOccurrence(m, now) }))
     .sort((a, b) => a.at - b.at);
+}
+
+// How many of those there are, on the Calendar tab, whichever page is showing.
+function renderCalendarCount() {
+  const count = waitingInvites().length;
+  $("calendar-count").textContent = count;
+  $("calendar-count").hidden = !count;
+  if (count) $("nav-calendar").setAttribute("aria-label", `Calendar, ${count === 1 ? "1 meeting is" : `${count} meetings are`} waiting for your answer`);
+  else $("nav-calendar").removeAttribute("aria-label");
+}
+
+function renderWaitingBanner() {
+  const waiting = waitingInvites();
   $("meeting-waiting").hidden = !waiting.length;
   if (!waiting.length) return;
   const { m: next, at } = waiting[0];
@@ -2471,9 +2489,91 @@ function renderWaitingBanner() {
   $("meeting-waiting-open").dataset.meeting = next.id;
 }
 
+// ---------- My meetings: the calendar as a list ----------
+
+const CALENDAR_VIEW_KEY = "board.calendarView"; // "mine" on a device that last chose the list
+const MY_ANSWER = { waiting: "Waiting for your answer", accepted: "You accepted", declined: "You declined" };
+state.calendarView = readStorage("localStorage", CALENDAR_VIEW_KEY) === "mine" ? "mine" : "week";
+
+// Every meeting this person set or is invited to: what's still to come soonest first, then
+// what's over, latest first. Meetings other people set between themselves aren't here.
+function renderMyMeetings() {
+  const now = new Date();
+  const mine = state.meetings.filter((m) => isOrganizer(m) || myInvite(m)).map((m) => {
+    const first = new Date(m.starts_at);
+    const past = !repeats(m) && new Date(m.ends_at) <= now;
+    const at = repeats(m) ? nextOccurrence(m, now) : first;
+    const invite = !isOrganizer(m) && myInvite(m);
+    const others = m.people.map((p) => p.name);
+    return {
+      id: m.id,
+      title: m.title,
+      past,
+      at: at.getTime(),
+      when: repeats(m)
+        ? `${capitalize(repeatPhrase(m.repeat, first))}, ${formatTime(first)} · next ${formatDay(at)}`
+        : `${formatDay(first)}, ${formatTime(first)} to ${formatTime(new Date(m.ends_at))}`,
+      // Where it stands for this person: their own answer, or how their own meeting is doing.
+      status: invite ? [MY_ANSWER[invite.answer], invite.answer] : meetingStatus(m),
+      meta: [
+        m.place,
+        invite ? `Set by ${m.created_by}` : others.length ? `With ${others.join(", ")}` : "Just you",
+        findTask(m.task_id) && `Task: ${findTask(m.task_id).title}`,
+      ].filter(Boolean).join(" · "),
+    };
+  });
+  const upcoming = mine.filter((m) => !m.past).sort((a, b) => a.at - b.at);
+  const past = mine.filter((m) => m.past).sort((a, b) => b.at - a.at);
+
+  // Only rebuilds when something shows differently, so Past stays open across a refresh.
+  const box = $("my-meetings");
+  const signature = JSON.stringify([upcoming, past]);
+  if (box.dataset.sig === signature) return;
+  const pastOpen = !!box.querySelector(".mine-past")?.open;
+  box.dataset.sig = signature;
+  const row = (m) => el("li", {},
+    el("button", { class: `mine-row${m.past ? " is-past" : ""}`, type: "button", "data-meeting": m.id, "data-at": m.at },
+      el("span", { class: "mine-when" }, m.when),
+      el("span", { class: "mine-title" }, m.title, m.meta && el("span", { class: "mine-meta" }, m.meta)),
+      el("span", { class: `meeting-answer answer-${m.status[1]}` }, m.past ? "Past" : m.status[0])));
+  box.replaceChildren(...[
+    upcoming.length
+      ? el("ul", { class: "mine-list", "data-list": "upcoming" }, ...upcoming.map(row))
+      : el("p", { class: "win-empty" }, past.length ? "Nothing coming up." : "You have no meetings yet. Set one with Set meeting, or wait for an invite."),
+    past.length > 0 && el("details", { class: "mine-past", open: pastOpen },
+      el("summary", {}, `Past (${past.length})`),
+      el("ul", { class: "mine-list", "data-list": "past" }, ...past.map(row))),
+  ].filter(Boolean));
+}
+
+function setCalendarView(view) {
+  state.calendarView = view;
+  writeStorage("localStorage", CALENDAR_VIEW_KEY, view === "mine" ? "mine" : null);
+  renderCalendar();
+}
+
+$("view-week").addEventListener("click", () => setCalendarView("week"));
+$("view-mine").addEventListener("click", () => setCalendarView("mine"));
+$("my-meetings").addEventListener("click", (event) => {
+  const row = event.target.closest("[data-meeting]");
+  if (row) openMeeting(row.dataset.meeting);
+});
+
 function renderCalendar() {
   if ($("calendar-view").hidden) return;
   renderWaitingBanner();
+
+  // The week and the list share the page: one shows, and the week's own controls go with it.
+  const listing = state.calendarView === "mine";
+  $("view-week").setAttribute("aria-pressed", String(!listing));
+  $("view-mine").setAttribute("aria-pressed", String(listing));
+  $("my-meetings").hidden = !listing;
+  for (const part of [$("week-prev"), $("week-next"), $("week-today"), document.querySelector(".week-scroll"), document.querySelector(".week-legend")]) part.hidden = listing;
+  if (listing) {
+    $("week-title").textContent = "My meetings";
+    renderMyMeetings();
+    return;
+  }
 
   const days = Array.from({ length: 7 }, (_, i) => addDays(state.weekStart, i));
   const short = { month: "short", day: "numeric" };

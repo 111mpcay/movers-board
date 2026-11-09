@@ -898,6 +898,30 @@ body::before {
 .meeting-next { font-size: 0.9rem; color: var(--muted); }
 .meeting-place { overflow-wrap: anywhere; }
 .meeting-notes { margin-top: 3px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+/* The calendar's two views: the week, or this person's own meetings as a list */
+.view-switch { display: inline-flex; }
+.view-switch .btn { border-radius: 0; }
+.view-switch .btn:first-child { border-radius: 6px 0 0 6px; }
+.view-switch .btn:last-child { margin-left: -1px; border-radius: 0 6px 6px 0; }
+.view-switch .btn[aria-pressed="true"] { position: relative; color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
+.my-meetings { max-width: 900px; }
+.mine-list { list-style: none; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.mine-list li + li { border-top: 1px solid var(--line); }
+.mine-row { display: grid; grid-template-columns: minmax(150px, 250px) minmax(0, 1fr) auto; align-items: center; gap: 2px 16px; width: 100%; padding: 9px 12px; text-align: left; color: inherit; background: none; border: 0; cursor: pointer; }
+.mine-row:hover { background: var(--surface-2); }
+.mine-when { font-size: 0.86rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mine-title { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.mine-meta { display: block; margin-top: 1px; font-size: 0.8rem; font-weight: 400; color: var(--muted); }
+.mine-row.is-past .mine-title { font-weight: 500; color: var(--muted); }
+.mine-row.is-past .meeting-answer { font-weight: 500; color: var(--muted); }
+.mine-past { margin-top: 14px; }
+.mine-past > summary { width: fit-content; margin-bottom: 8px; font-size: 0.88rem; font-weight: 600; color: var(--muted); cursor: pointer; }
+/* Too narrow for three across: when it is goes above what it is. */
+@media (max-width: 700px) {
+  .mine-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .mine-when { grid-column: 1 / -1; }
+}
+
 .meeting-answer { font-size: 0.85rem; font-weight: 600; }
 .answer-accepted { color: var(--ok-fg); }
 .answer-declined { color: var(--danger); }
