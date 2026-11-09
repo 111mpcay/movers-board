@@ -1778,7 +1778,8 @@ function taskPicker(taskId = null) {
 function taskFields(assignPicker) {
   return [
     field("Task", textInput({ maxlength: "200", "data-field": "title" })),
-    field("Details", el("textarea", { class: "input", rows: "2", maxlength: "4000", "data-field": "details" })),
+    // Called "Goal" on the page. The board keeps it under its first name, "details".
+    field("Goal", el("textarea", { class: "input", rows: "2", maxlength: "4000", "data-field": "details" })),
     el("div", { class: "field-row" },
       el("div", { class: "field" }, el("span", { class: "label", "data-col-label": "assign" }, WINDOW_LABELS.assign), assignPicker.root),
       columnField("deadline", el("input", { class: "input", type: "date", "data-field": "deadline" }),
@@ -1967,7 +1968,7 @@ function openTask(id) {
   showWindow(w);
 }
 
-// A task's window is its name and details, then sections that fold away. Which ones start
+// A task's window is its name and goal, then sections that fold away. Which ones start
 // open is the same for every task: as this person last left them on this device, and
 // before that, the parts worked on most (subtasks and updates) open and the rest folded.
 const FOLDS_KEY = "board.taskFolds";
