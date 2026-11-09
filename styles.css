@@ -1201,6 +1201,11 @@ body::before {
 .win-foot { display: flex; align-items: center; gap: 8px; }
 .win-new-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
+/* The projects a task is mirrored into, in its window: plain tags, not people's colors */
+.mirror-tags:empty { display: none; }
+.mirror-tags { margin-bottom: 6px; }
+.mirror-tag { color: var(--ink); background: var(--surface-2); border: 1px solid var(--line); }
+
 /* A project's own columns in a task's window, two to a line like the fields above them */
 .own-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 
