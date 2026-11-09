@@ -337,7 +337,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     move: (id, position, projectId = null) => rpc("movers_move_task", { p_token: token, p_id: id, p_position: position, p_project: projectId }),
     // Everywhere a task is mirrored, as the whole list: {task_id} for inside a task, {project_id} for a project's list.
     mirrorTask: (id, targets) => rpc("movers_mirror_task", { p_token: token, p_id: id, p_targets: targets }),
-    addUpdate: (id, text) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text }),
+    addUpdate: (id, text, mentions) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text, p_mentions: mentions || [] }),
     addComment: (taskId, body, mentions) => rpc("movers_add_task_comment", { p_token: token, p_task_id: taskId, p_body: body, p_mentions: mentions }),
     taskHistory: (taskId) => rpc("movers_task_history", { p_token: token, p_task_id: taskId }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
@@ -2041,10 +2041,11 @@ function commentBody(comment) {
   return parts;
 }
 
-// The box a comment is written in. Typing @ lists the people on the board, narrowed by
-// what follows it: Enter, Tab or a click puts the name in, and Escape puts the list away.
-function commentForm() {
-  const input = textInput({ maxlength: "2000", placeholder: "Write a comment. Type @ to mention someone", "aria-label": "New comment", autocomplete: "off", "data-input": "text" });
+// The box a comment or an update is written in. Typing @ lists the people on the board,
+// narrowed by what follows it: Enter, Tab or a click puts the name in, and Escape puts the
+// list away.
+function mentionForm({ name, placeholder, label, button, maxlength }) {
+  const input = textInput({ maxlength, placeholder, "aria-label": label, autocomplete: "off", "data-input": "text" });
   const list = el("ul", { class: "mention-options", "data-mention-options": true, hidden: true });
   let found = [];
   let active = 0;
@@ -2115,9 +2116,9 @@ function commentForm() {
     pick(option.dataset.mention);
   });
 
-  return el("form", { class: "win-form comment-form", "data-form": "comment", novalidate: true },
+  return el("form", { class: "win-form mention-form", "data-form": name, novalidate: true },
     input,
-    el("button", { class: "btn btn-primary", type: "submit" }, "Comment"),
+    el("button", { class: "btn btn-primary", type: "submit" }, button),
     list);
 }
 
@@ -2139,9 +2140,10 @@ async function loadHistory(w, total) {
   if (w.root.isConnected && findTask(w.taskId)) renderTaskWindow(w);
 }
 
-// Opens a task's comments without that counting as how this person keeps the section.
-function showComments(taskId) {
-  const fold = state.windows.get(taskId)?.body.querySelector('[data-fold="comments"]');
+// Opens one of a task's sections, to show where someone was mentioned, without that
+// counting as how this person keeps the section.
+function showSection(taskId, name) {
+  const fold = state.windows.get(taskId)?.body.querySelector(`[data-fold="${name}"]`);
   if (!fold) return;
   if (!fold.open) {
     fold.dataset.quiet = "1";
@@ -2180,14 +2182,13 @@ function buildTaskWindow(w, task) {
         textInput({ maxlength: "200", placeholder: "Add a subtask", "aria-label": "New subtask", "data-input": "title" }),
         textInput({ class: "input is-narrow", maxlength: "200", list: "people-list", placeholder: "Assign", "aria-label": "Assign the new subtask to, with commas between names", "data-input": "assignee" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
+    // Where the task stands, as the people working on it post it. Typing @ mentions someone.
     taskFold("updates", ["Updates"],
-      el("form", { class: "win-form", "data-form": "update", novalidate: true },
-        textInput({ maxlength: "1000", placeholder: "Add an update", "aria-label": "New update", "data-input": "text" }),
-        el("button", { class: "btn btn-primary", type: "submit" }, "Post")),
+      mentionForm({ name: "update", placeholder: "Add an update. Type @ to mention someone", label: "New update", button: "Post", maxlength: "1000" }),
       el("ul", { class: "activity-list", "data-list": "updates" })),
     // What people say about it. Typing @ mentions someone, who is then told.
     taskFold("comments", ["Comments", count("comments")],
-      commentForm(),
+      mentionForm({ name: "comment", placeholder: "Write a comment. Type @ to mention someone", label: "New comment", button: "Comment", maxlength: "2000" }),
       el("ul", { class: "activity-list comment-list", "data-list": "comments" })),
     // The meetings set for this task, and a way to set another without leaving it.
     // Meetings, files and links are declared on the task. A subtask has these two sections
@@ -2368,14 +2369,15 @@ function renderTaskWindow(w) {
   // everything the board has kept for this task: those notes and every change, newest first.
   const entries = [...(task.updates || [])].reverse();
   const notes = entries.filter((entry) => entry.kind === "note");
-  const entrySignature = (entry) => [entry.at, entry.by, entry.kind, entry.text, timeAgo(entry.at)];
+  const entrySignature = (entry) => [entry.at, entry.by, entry.kind, entry.text, entry.mentions, timeAgo(entry.at), state.name];
   // How long ago, with the exact day and time on hover.
   const when = (entry) => el("span", { class: "activity-time", title: new Date(entry.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }, timeAgo(entry.at));
   renderList(w, "updates", notes.map(entrySignature), () =>
     notes.length ? notes.map((entry) => el("li", {},
       el("strong", {}, entry.by), " ",
       el("span", { class: "activity-time" }, timeAgo(entry.at)),
-      el("span", { class: "activity-note" }, entry.text))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
+      // The people an update mentions stand out, as they do in a comment.
+      el("span", { class: "activity-note" }, ...commentBody({ body: entry.text, mentions: entry.mentions })))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
   // A task carries its latest fifty entries, and the board keeps every one. When there are
   // more, the rest are fetched once the section is open, and again when the count moves on.
   const total = task.history_count ?? entries.length;
@@ -2492,7 +2494,7 @@ async function onWindowSubmit(w, event) {
   } else if (form.dataset.form === "update") {
     const text = input("text").value.trim();
     if (!text) return input("text").focus();
-    action = () => state.store.addUpdate(w.taskId, text);
+    action = () => state.store.addUpdate(w.taskId, text, mentionsIn(text));
     failure = "That update didn't post. Check your connection and try again.";
     focusAfter = input("text");
   } else if (form.dataset.form === "comment") {
@@ -3811,7 +3813,9 @@ function notificationLines(n) {
     return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, n.action === "changed" ? `now ${when}` : when]];
   }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
-  if (n.action === "mentioned") return [`${n.by_name} mentioned you in a comment`, where, `“${String(n.detail || "")}”`];
+  if (n.action === "mentioned" || n.action === "mentioned_update") {
+    return [`${n.by_name} mentioned you in ${n.action === "mentioned" ? "a comment" : "an update"}`, where, `“${String(n.detail || "")}”`];
+  }
   if (n.action === "edited" || n.action === "noted") {
     // Changes by the same person fold into one notice: the latest, and a count of the rest.
     const posted = n.action === "noted";
@@ -3916,7 +3920,7 @@ function renderNotifications() {
           change && el("span", { class: "notify-task notify-change" }, change),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in comments, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {
@@ -3958,12 +3962,13 @@ $("notify-read-all").addEventListener("click", () => markNotificationsRead(null)
 $("notify-list").addEventListener("click", (event) => {
   const item = event.target.closest("[data-notification]");
   if (!item) return;
-  const mention = state.notifications.find((n) => n.id === item.dataset.notification)?.action === "mentioned";
+  // A mention opens the task at the section it was made in.
+  const mentionedIn = { mentioned: "comments", mentioned_update: "updates" }[state.notifications.find((n) => n.id === item.dataset.notification)?.action];
   markNotificationsRead([item.dataset.notification]);
   // On a phone the list is its own page, so leave it up when there's nothing to go to.
   if (!isPhone() || findTask(item.dataset.task) || findMeeting(item.dataset.openMeeting)) closeNotifications();
   openTask(item.dataset.task);
-  if (mention) showComments(item.dataset.task); // a mention opens the task where it was said
+  if (mentionedIn) showSection(item.dataset.task, mentionedIn);
   openMeeting(item.dataset.openMeeting);
 });
 
