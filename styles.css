@@ -374,6 +374,21 @@ body::before {
 }
 .task-rows.is-filtered:empty::before { content: "No tasks in this project match this filter."; }
 
+/* Above the sheet: the assignee filter on the left, the project's columns on the right. */
+.sheet-tools { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
+.sheet-tools .task-filter { margin-bottom: 0; }
+
+/* With more columns than the page is wide, the sheet scrolls sideways inside itself. How
+   wide that is depends on the project's columns, so the page's script writes that rule
+   (sheetFitRule in app.js). */
+
+/* Every column hidden: the hint under the list takes the whole row. */
+.sheet.no-columns .quick-hint { grid-column: 1 / -1; border-left: 0; }
+
+/* A project's own columns in the list */
+.own-select { width: 100%; max-width: 150px; text-overflow: ellipsis; }
+.cell-input[type="number"] { max-width: 120px; font-variant-numeric: tabular-nums; }
+
 /* The assignee filter: a button, and a list of people to tick that drops down from it.
    The list hangs from the button's left edge, which is always at the page's left. */
 .task-filter { position: relative; width: fit-content; max-width: 100%; margin-bottom: 12px; }
@@ -1159,6 +1174,24 @@ body::before {
 .win-remove:hover, .win-remove.armed { background: var(--danger-bg); }
 .win-foot { display: flex; align-items: center; gap: 8px; }
 .win-new-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* A project's own columns in a task's window, two to a line like the fields above them */
+.own-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+
+/* The Columns window: the standard columns to rename or hide, then the project's own */
+.columns-intro { margin-top: 0; }
+.col-list { list-style: none; display: flex; flex-direction: column; gap: 7px; }
+.col-row { display: flex; align-items: center; gap: 10px; }
+.col-row .input, .col-own-top .input { min-width: 0; min-height: 36px; padding: 6px 9px; }
+.col-row .input { flex: 1; }
+.col-show { display: inline-flex; flex: none; align-items: center; gap: 7px; width: 4.8em; font-size: 0.88rem; cursor: pointer; }
+.col-show input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--orange); cursor: pointer; }
+.col-own { padding: 8px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; }
+.col-own-top { display: flex; align-items: center; gap: 7px; }
+.col-own-top [data-custom-name] { flex: 1 1 140px; }
+.col-own-top select { flex: 0 1 132px; }
+.col-own-choices { margin-top: 7px; }
+.col-own-choices .input { display: block; width: 100%; resize: vertical; }
 .spacer { flex: 1; }
 .subtask-done { text-decoration: line-through; color: var(--muted); }
 
@@ -1269,7 +1302,7 @@ body::before {
 }
 
 @media (max-width: 480px) {
-  .field-row { grid-template-columns: minmax(0, 1fr); }
+  .field-row, .own-fields { grid-template-columns: minmax(0, 1fr); }
   .gate-band { padding-inline: 20px; }
   .gate-body { padding-inline: 20px; }
 }

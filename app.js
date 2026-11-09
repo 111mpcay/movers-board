@@ -3,6 +3,30 @@
 const STATUS = { todo: "To do", doing: "In progress", done: "Done" };
 const URGENCY = { low: "Low", normal: "Normal", high: "High", critical: "Critical" };
 const REPEATS = { none: "One time", weekly: "Weekly", monthly: "Monthly" };
+// The task list's standard columns, in order. A project can rename or hide them and add
+// its own (supabase/014_project_columns.sql). Their values stay whatever they're called
+// and whether or not they show, since reminders, progress and the People page run on them.
+const STANDARD_COLUMNS = [
+  { key: "assign", label: "Assign", min: 110, grow: 1 },
+  { key: "urgency", label: "Urgency", min: 120, grow: 1 },
+  { key: "deadline", label: "Deadline", min: 140, grow: 1.05 },
+  { key: "status", label: "Status", min: 130, grow: 1 },
+  { key: "progress", label: "Progress", min: 170, grow: 1.5 },
+];
+// What the standard columns are called in a task's window, where they haven't been renamed.
+const WINDOW_LABELS = { assign: "Assign to", urgency: "Urgency", deadline: "Deadline", status: "Status", progress: "Progress" };
+const COLUMN_KINDS = { text: "Text", choice: "Choice list", number: "Number", date: "Date" };
+const KIND_MIN = { text: 150, choice: 130, number: 110, date: 140 }; // the narrowest each kind reads well, in px
+const TITLE_MIN = 240; // and the task names
+const MAX_OWN_COLUMNS = 12;
+const PLAIN_NUMBER = /^-?\d{1,15}(\.\d{1,6})?$/;
+const COLUMN_ERRORS = {
+  column_name_required: "Give every column of your own a name, or remove it.",
+  column_choices_required: "A choice column needs at least one choice.",
+  too_many_columns: `A project takes up to ${MAX_OWN_COLUMNS} columns of its own.`,
+  invalid_columns: "Those columns couldn't be saved as they are. Check the names and choices.",
+  project_not_found: "This project has been deleted.",
+};
 const ROLL_MS = 10 * 60000; // how often an open page asks the board to check for reminders
 const HOUR_MS = 60 * 60000; // how long before a meeting its reminder goes out
 // Picked by eye rather than spaced evenly, since evenly spaced hues mostly look green.
@@ -218,6 +242,22 @@ function onlyChanged(task, changes) {
 const findTask = (id) => state.tasks.find((t) => t.id === id);
 const subtasksOf = (id) => state.tasks.filter((t) => t.parent_id === id).sort((a, b) => a.position - b.position);
 
+const findProject = (id) => state.projects.find((p) => p.id === id);
+// The columns a project added for itself.
+const ownColumns = (projectId) => findProject(projectId)?.columns?.custom || [];
+// What a project calls a standard column, if it gave it a name of its own.
+const renamed = (projectId, key) => findProject(projectId)?.columns?.builtin?.[key]?.label || "";
+
+// The columns a project's task list shows, left to right: the standard ones it hasn't
+// hidden, then its own.
+function shownColumns(projectId) {
+  const builtin = findProject(projectId)?.columns?.builtin || {};
+  return [
+    ...STANDARD_COLUMNS.filter((c) => !builtin[c.key]?.hidden).map((c) => ({ id: c.key, label: renamed(projectId, c.key) || c.label, min: c.min, grow: c.grow })),
+    ...ownColumns(projectId).map((f) => ({ id: f.id, label: f.name, min: KIND_MIN[f.type] || KIND_MIN.text, grow: 1, field: f })),
+  ];
+}
+
 // ---------- Data ----------
 
 function remoteStore({ supabaseUrl, supabaseKey }) {
@@ -262,6 +302,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     addUpdate: (id, text) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
     saveProject: (id, name, color) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name, p_color: color }),
+    saveColumns: (id, columns) => rpc("movers_save_project_columns", { p_token: token, p_id: id, p_columns: columns }),
     moveProject: (id, position) => rpc("movers_move_project", { p_token: token, p_id: id, p_position: position }),
     removeProject: (id) => rpc("movers_delete_project", { p_token: token, p_id: id }),
     addLink: (taskId, title, url) => rpc("movers_add_link", { p_token: token, p_task_id: taskId, p_title: title, p_url: url }),
@@ -657,8 +698,52 @@ function dotSelect(field, value, options, label) {
       ...Object.entries(options).map(([key, text]) => el("option", { value: key, selected: key === value }, text))));
 }
 
-function cell(label, ...children) {
-  return el("div", { class: "cell", role: "cell", "data-label": label }, ...children);
+function cell(column, ...children) {
+  return el("div", { class: `cell${column.id === "progress" ? " cell-progress" : ""}`, role: "cell", "data-label": column.label, "data-col": column.id }, ...children);
+}
+
+// The control for one of a project's own columns: small in a row of the list, full size in
+// a task's window.
+function ownControl(field, value, inRow, label) {
+  const shown = String(value ?? "");
+  const common = { "data-custom": field.id, "aria-label": label };
+  if (field.type === "choice") {
+    // A choice the column no longer offers stays on the task until someone picks another.
+    const options = !shown || field.options.includes(shown) ? field.options : [shown, ...field.options];
+    const select = el("select", { class: inRow ? "plain-select own-select" : "input", ...common },
+      el("option", { value: "" }, inRow ? "–" : "None"),
+      ...options.map((option) => el("option", { value: option, selected: option === shown }, option)));
+    return inRow ? el("span", { class: "dot-select" }, select) : select;
+  }
+  return el("input", {
+    class: inRow ? `cell-input${field.type === "date" ? " date-input" : ""}` : "input",
+    type: field.type,
+    value: shown,
+    ...common,
+    ...(field.type === "text" && { maxlength: "200", autocomplete: "off" }),
+    ...(field.type === "number" && { step: "any", inputmode: "decimal" }),
+    // An empty cell in the list still has to look like somewhere to type.
+    ...(inRow && field.type !== "date" && { placeholder: "–" }),
+  });
+}
+
+// Saves what was put in one of a project's own columns, from the list or a task's window.
+function saveOwnValue(taskId, control, focusKey) {
+  const task = findTask(taskId);
+  const field = ownColumns(task?.project_id).find((f) => f.id === control.dataset.custom);
+  if (!field) return;
+  const value = control.value.trim();
+  const w = state.windows.get(taskId);
+  const inWindow = !!w && w.body.contains(control);
+  if (field.type === "number" && value && !PLAIN_NUMBER.test(value)) {
+    control.value = String(task.custom?.[field.id] ?? "");
+    const message = `${field.name} takes a plain number, like 12 or 12.5.`;
+    if (inWindow) showWindowError(w, message);
+    else showSyncNote(message);
+    return;
+  }
+  if (inWindow) showWindowError(w, null);
+  updateTask(taskId, { custom: { [field.id]: value } }, focusKey);
 }
 
 function subtaskSummary(task) {
@@ -671,6 +756,7 @@ function rowSignature(task) {
   return JSON.stringify([
     task.title, task.assignees, task.urgency, task.deadline, task.repeat, task.status, task.progress,
     task.updated_by, timeAgo(task.updated_at), deadlineNote(task)?.text, subtaskSummary(task),
+    task.custom, state.columnsSig,
   ]);
 }
 
@@ -691,18 +777,41 @@ function rowPicker(task) {
   return picker.root;
 }
 
+// What goes in a row's cell for each standard column.
+const STANDARD_CELLS = {
+  assign: (task) => [rowPicker(task)],
+  urgency: (task, label) => [dotSelect("urgency", task.urgency, URGENCY, label)],
+  deadline(task, label) {
+    const note = deadlineNote(task);
+    return [
+      el("input", { class: "cell-input date-input", type: "date", value: task.deadline || "", "data-field": "deadline", "aria-label": label }),
+      note && el("span", { class: `due-note due-${note.tone}` }, note.text),
+    ];
+  },
+  status: (task, label) => [dotSelect("status", task.status, STATUS, label)],
+  progress: (task, label) => [
+    el("div", { class: "progress-wrap" },
+      el("output", { class: "progress-label" }, `${task.progress}%`),
+      el("input", {
+        class: "progress-range",
+        type: "range",
+        min: "0",
+        max: "100",
+        step: "5",
+        value: task.progress,
+        style: `--p: ${task.progress}%`,
+        "data-field": "progress",
+        "aria-label": label,
+      })),
+  ],
+};
+
 function renderRow(task) {
-  const note = deadlineNote(task);
-  const progress = el("input", {
-    class: "progress-range",
-    type: "range",
-    min: "0",
-    max: "100",
-    step: "5",
-    value: task.progress,
-    style: `--p: ${task.progress}%`,
-    "data-field": "progress",
-    "aria-label": `Progress of ${task.title}`,
+  const cells = shownColumns(task.project_id).map((column) => {
+    const label = `${column.label} of ${task.title}`;
+    return column.field
+      ? cell(column, ownControl(column.field, task.custom?.[column.id], true, label))
+      : cell(column, ...STANDARD_CELLS[column.id](task, label));
   });
   const row = el("div", { class: "task-row", role: "row", "data-id": task.id, "data-sig": rowSignature(task) },
     el("div", { class: "task-cell", role: "cell" },
@@ -715,23 +824,44 @@ function renderRow(task) {
         el("span", { class: "task-glance-line" }, el("span", { class: `dot dot-${task.urgency}` }), STATUS[task.status]),
         el("span", { class: "task-glance-line" }, el("span", { class: "task-glance-bar" }, el("i", { style: `width: ${task.progress}%` })), `${task.progress}%`),
         repeats(task) && el("span", { class: "task-glance-line" }, `↻ ${REPEATS[task.repeat]}`))),
-    cell("Assign", rowPicker(task)),
-    cell("Urgency", dotSelect("urgency", task.urgency, URGENCY, `Urgency of ${task.title}`)),
-    cell("Deadline",
-      el("input", {
-        class: "cell-input date-input",
-        type: "date",
-        value: task.deadline || "",
-        "data-field": "deadline",
-        "aria-label": `Deadline of ${task.title}`,
-      }),
-      note && el("span", { class: `due-note due-${note.tone}` }, note.text)),
-    cell("Status", dotSelect("status", task.status, STATUS, `Status of ${task.title}`)),
-    el("div", { class: "cell cell-progress", role: "cell", "data-label": "Progress" },
-      el("div", { class: "progress-wrap" },
-        el("output", { class: "progress-label" }, `${task.progress}%`),
-        progress)));
+    ...cells);
   return row;
+}
+
+// The sheet's headings and grid, for the project that's showing.
+function renderSheetHead() {
+  const sheet = document.querySelector(".sheet");
+  const columns = shownColumns(state.projectId);
+  const signature = JSON.stringify(columns);
+  state.columnsSig = signature;
+  if (sheet.dataset.sig !== signature) {
+    sheet.dataset.sig = signature;
+    const head = sheet.querySelector(".sheet-head");
+    head.querySelectorAll(".head-tab").forEach((tab) => tab.remove());
+    head.append(...columns.map((c) => el("div", { class: "head-tab", role: "columnheader", "data-col": c.id }, c.label)));
+    sheet.classList.toggle("no-columns", !columns.length);
+    sheet.style.setProperty("--cols", [`minmax(${TITLE_MIN}px, 2.3fr)`, ...columns.map((c) => `minmax(${c.min}px, ${c.grow}fr)`)].join(" "));
+    if (!$("sheet-fit")) document.head.append(el("style", { id: "sheet-fit" }));
+    $("sheet-fit").textContent = sheetFitRule(TITLE_MIN + columns.reduce((sum, c) => sum + c.min, 0));
+  }
+}
+
+// With more columns than the page is wide, the sheet scrolls sideways inside itself and the
+// task names stay in view. How wide is wide enough depends on the project's columns, so the
+// rule is written here and the browser applies it as the window changes size, with nothing
+// to keep in step. Pages under 981px show each row as a card, so they never need it.
+function sheetFitRule(needed) {
+  const widest = needed + 82; // plus the rail, the page's side padding, and room for a scrollbar
+  // The rail down the left goes, as on narrow pages: the names pin to the sheet's own edge,
+  // and anything left of them would show the columns sliding past.
+  return `@media (min-width: 981px) and (max-width: ${widest}px) {
+  .sheet { padding-left: 0; overflow-x: auto; overscroll-behavior-x: contain; }
+  .sheet::before, .sheet .task-row::before, .sheet .task-row::after, .sheet .quick-add::before, .sheet .quick-add::after { display: none; }
+  .sheet > .sheet-head, .sheet > .task-rows, .sheet > .quick-add { min-width: ${needed}px; }
+  .sheet > .sheet-head { position: static; }
+  .sheet .task-cell, .sheet .head-title { position: sticky; left: 0; z-index: 2; }
+  .sheet .head-title { background: var(--bg); }
+}`;
 }
 
 function renderSummary() {
@@ -868,6 +998,7 @@ function renderBoard() {
   syncRoute();
   renderProjectCards();
   renderProjectPage();
+  renderSheetHead(); // before the rows, which are redrawn when the columns change
   renderRows();
   renderSummary();
   renderPeople();
@@ -883,7 +1014,8 @@ function refreshRow(id, focusField) {
   if (!row || !task) return;
   const fresh = renderRow(task);
   row.replaceWith(fresh);
-  if (focusField) fresh.querySelector(`[data-field="${focusField}"]`)?.focus();
+  // One of the project's own columns is named "own:" and its id.
+  if (focusField) fresh.querySelector(focusField.startsWith("own:") ? `[data-custom="${CSS.escape(focusField.slice(4))}"]` : `[data-field="${focusField}"]`)?.focus();
 }
 
 async function updateTask(id, changes, focusField) {
@@ -906,11 +1038,18 @@ async function updateTask(id, changes, focusField) {
       return;
     }
   }
-  const diff = onlyChanged(task, linkStatusAndProgress(task, changes));
+  // The project's own columns travel together as "custom", and only the ones that changed
+  // are sent, so two people filling in different columns don't overwrite each other.
+  const { custom: ownChanges, ...plainChanges } = changes;
+  const diff = onlyChanged(task, linkStatusAndProgress(task, plainChanges));
+  const own = Object.fromEntries(Object.entries(ownChanges || {}).filter(([key, value]) => String(task.custom?.[key] ?? "") !== String(value ?? "")));
+  if (Object.keys(own).length) diff.custom = own;
   if (!Object.keys(diff).length) return;
 
   // Show the change straight away; the next read confirms it.
-  Object.assign(task, diff, { updated_by: state.name, updated_at: new Date().toISOString() });
+  const { custom: _own, ...plainDiff } = diff;
+  Object.assign(task, plainDiff, { updated_by: state.name, updated_at: new Date().toISOString() });
+  task.custom = Object.fromEntries(Object.entries({ ...task.custom, ...own }).filter(([, value]) => String(value ?? "") !== ""));
   refreshRow(id, focusField);
   renderSummary();
   renderWindows();
@@ -935,6 +1074,8 @@ function previewProgress(event) {
 const rows = $("task-rows");
 
 rows.addEventListener("change", (event) => {
+  const own = event.target.closest("[data-custom]");
+  if (own) return saveOwnValue(own.closest(".task-row").dataset.id, own, `own:${own.dataset.custom}`);
   const control = event.target.closest("[data-field]");
   if (!control) return;
   const field = control.dataset.field;
@@ -1496,13 +1637,47 @@ function taskFields(assignPicker) {
     field("Task", textInput({ maxlength: "200", "data-field": "title" })),
     field("Details", el("textarea", { class: "input", rows: "2", maxlength: "4000", "data-field": "details" })),
     el("div", { class: "field-row" },
-      el("div", { class: "field" }, el("span", { class: "label" }, "Assign to"), assignPicker.root),
-      field("Deadline", el("input", { class: "input", type: "date", "data-field": "deadline" }),
+      el("div", { class: "field" }, el("span", { class: "label", "data-col-label": "assign" }, WINDOW_LABELS.assign), assignPicker.root),
+      columnField("deadline", el("input", { class: "input", type: "date", "data-field": "deadline" }),
         el("span", { class: "due-note", "data-deadline-note": true }))),
     el("div", { class: "field-row" },
-      field("Urgency", optionsSelect("urgency", URGENCY)),
-      field("Status", optionsSelect("status", STATUS))),
+      columnField("urgency", optionsSelect("urgency", URGENCY)),
+      columnField("status", optionsSelect("status", STATUS))),
   ];
+}
+
+// A field for one of the standard columns. Its label follows what the project calls it.
+function columnField(key, control, ...rest) {
+  const node = field(WINDOW_LABELS[key], control, ...rest);
+  node.querySelector(".label").dataset.colLabel = key;
+  return node;
+}
+
+function nameColumnFields(root, projectId) {
+  for (const label of root.querySelectorAll("[data-col-label]")) {
+    const text = renamed(projectId, label.dataset.colLabel) || WINDOW_LABELS[label.dataset.colLabel];
+    if (label.textContent !== text) label.textContent = text;
+  }
+}
+
+// The project's own columns in a task's window. Rebuilt when the project's setup changes,
+// and otherwise kept up to date, leaving alone whatever is being typed in.
+function renderOwnFields(w, task) {
+  const box = w.body.querySelector("[data-custom-fields]");
+  const fields = ownColumns(task.project_id);
+  const signature = JSON.stringify(fields);
+  if (box.dataset.sig !== signature && !box.contains(document.activeElement)) {
+    box.dataset.sig = signature;
+    box.hidden = !fields.length;
+    box.replaceChildren(...fields.map((f) => field(f.name, ownControl(f, task.custom?.[f.id], false, null))));
+  }
+  for (const control of box.querySelectorAll("[data-custom]")) {
+    if (control === document.activeElement) continue;
+    const value = String(task.custom?.[control.dataset.custom] ?? "");
+    // A choice the column no longer offers still has to show.
+    if (control.tagName === "SELECT" && value && ![...control.options].some((o) => o.value === value)) control.add(new Option(value, value), 1);
+    if (control.value !== value) control.value = value;
+  }
 }
 
 // ---------- A task's window ----------
@@ -1530,9 +1705,11 @@ function buildTaskWindow(w, task) {
     !isSubtask && el("div", { class: "field-row" },
       repeatField(),
       field("Project", el("select", { class: "input", "data-field": "project_id" }))),
-    field("Progress", el("div", { class: "progress-wrap progress-wrap-large" },
+    columnField("progress", el("div", { class: "progress-wrap progress-wrap-large" },
       el("output", { class: "progress-label" }, "0%"),
       el("input", { class: "progress-range", type: "range", min: "0", max: "100", step: "5", "data-field": "progress" }))),
+    // The project's own columns, when it has any.
+    el("div", { class: "own-fields", "data-custom-fields": true, hidden: true }),
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
     // Only there when a meeting has been linked to this task.
     el("section", { class: "win-section", "data-section": "meetings", hidden: true },
@@ -1623,6 +1800,8 @@ function renderTaskWindow(w) {
   for (const name of ["title", "details", "deadline", "urgency", "status", "project_id"]) {
     setFieldValue(w, name, task[name]);
   }
+  nameColumnFields(w.body, task.project_id);
+  renderOwnFields(w, task);
   setFieldValue(w, "repeat", task.repeat || "none");
   const repeatNoteEl = w.body.querySelector("[data-repeat-note]");
   if (repeatNoteEl) repeatNoteEl.textContent = repeatNote(task);
@@ -1724,6 +1903,8 @@ function renderWindows() {
       }
       continue;
     }
+    // A Columns window goes with its project.
+    if (w.key === "columns" && !findProject(w.projectId)) closeWindow(w);
     if (!w.taskId) continue;
     if (findTask(w.taskId)) renderTaskWindow(w);
     else {
@@ -1735,7 +1916,9 @@ function renderWindows() {
 
 function onWindowChange(w, event) {
   const control = event.target;
-  if (control.dataset.field) {
+  if (control.dataset.custom) {
+    saveOwnValue(w.taskId, control);
+  } else if (control.dataset.field) {
     const name = control.dataset.field;
     const value = fieldValue(control);
     if (name === "title" && !value) {
@@ -1963,6 +2146,7 @@ function openNewTask() {
   // A new task always starts as To do, so its Status gives way to how often it repeats.
   w.body.querySelector('[data-field="status"]').closest(".field").replaceWith(repeatField());
   w.body.querySelector('[data-field="urgency"]').value = "normal";
+  nameColumnFields(form, state.projectId);
   const repeat = form.querySelector('[data-field="repeat"]');
   const deadline = form.querySelector('[data-field="deadline"]');
   let filled = null; // a deadline this form put in itself, which it can still move or take out
@@ -2013,6 +2197,168 @@ async function submitNewTask(w, event) {
 }
 
 $("add-btn").addEventListener("click", openNewTask);
+
+// ---------- A project's columns ----------
+
+const newColumnId = () => `c${crypto.randomUUID().replaceAll("-", "").slice(0, 11)}`;
+
+function openColumns() {
+  const project = findProject(state.projectId);
+  if (!project) return;
+  const existing = state.windows.get("columns");
+  if (existing) {
+    if (existing.projectId === project.id) return showWindow(existing);
+    closeWindow(existing);
+  }
+  const w = createWindow("columns", `Columns: ${project.name}`);
+  w.projectId = project.id;
+  w.width = 520;
+  placeWindow(w);
+  const form = el("form", { class: "win-body", novalidate: true });
+  w.body.replaceWith(form);
+  w.body = form;
+  buildColumnsForm(w, project.columns || {});
+  form.addEventListener("submit", (event) => submitColumns(w, event));
+  form.addEventListener("click", (event) => onColumnsClick(w, event));
+  form.addEventListener("change", (event) => onColumnsChange(w, event));
+  // Anything changed after the warning about removing a column means asking again.
+  form.addEventListener("input", () => { w.confirmed = null; });
+  showWindow(w);
+}
+
+// One of the project's own columns, as a row of the Columns window. A column that's been
+// saved keeps its kind, since what tasks have in it wouldn't fit another.
+function ownColumnRow(f, saved) {
+  return el("li", { class: "col-own", "data-custom-row": f.id },
+    el("div", { class: "col-own-top" },
+      textInput({ maxlength: "30", placeholder: "Column name", value: f.name, "data-custom-name": true, "aria-label": "Column name" }),
+      el("select", { class: "input", "data-custom-type": true, "aria-label": "Kind of column", disabled: saved, title: saved ? "A saved column keeps its kind" : null },
+        ...Object.entries(COLUMN_KINDS).map(([key, text]) => el("option", { value: key, selected: key === f.type }, text))),
+      el("button", { class: "win-remove", type: "button", "data-custom-remove": true }, "Remove")),
+    el("div", { class: "col-own-choices", hidden: f.type !== "choice" },
+      el("textarea", { class: "input", rows: "3", placeholder: "One choice per line", "data-custom-options": true, "aria-label": "Choices, one per line" }, (f.options || []).join("\n"))));
+}
+
+// Fills the window in from a setup: this project's, or another's being copied.
+function buildColumnsForm(w, setup, copiedFrom = "") {
+  const have = new Set(ownColumns(w.projectId).map((f) => f.id));
+  const others = state.projects.filter((p) => p.id !== w.projectId && (Object.keys(p.columns?.builtin || {}).length || p.columns?.custom?.length));
+  w.confirmed = null;
+  w.body.replaceChildren(...[
+    el("p", { class: "hint columns-intro" }, "How the task list looks in this project, for everyone on the board."),
+    section("Standard columns",
+      el("ul", { class: "col-list" }, ...STANDARD_COLUMNS.map((c) => el("li", { class: "col-row", "data-col-row": c.key },
+        el("label", { class: "col-show" },
+          el("input", { type: "checkbox", "data-col-show": true, checked: !setup.builtin?.[c.key]?.hidden, "aria-label": `Show ${c.label}` }), "Show"),
+        textInput({ maxlength: "30", placeholder: c.label, value: setup.builtin?.[c.key]?.label || "", "data-col-name": true, "aria-label": `Heading for ${c.label}` })))),
+      el("p", { class: "hint" }, "Type a heading to rename a column. One that isn't shown keeps its values and stays in each task's window, so reminders and progress carry on.")),
+    section("This project's own columns",
+      el("ul", { class: "col-list", "data-list": "custom-columns" }, ...(setup.custom || []).map((f) => ownColumnRow(f, have.has(f.id)))),
+      el("p", { class: "win-empty", "data-none": true }, "None yet."),
+      el("div", { class: "win-form" }, el("button", { class: "btn btn-quiet", type: "button", "data-add-column": true }, "Add a column"))),
+    others.length > 0 && field("Copy the columns from another project",
+      el("select", { class: "input", "data-copy-from": true },
+        el("option", { value: "" }, "Choose a project"),
+        ...others.map((p) => el("option", { value: p.id, selected: p.id === copiedFrom }, p.name))),
+      copiedFrom && el("span", { class: "hint" }, "Copied in. Nothing changes until you save.")),
+    el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
+    el("div", { class: "win-new-actions" }, el("button", { class: "btn btn-primary", type: "submit" }, "Save columns")),
+  ].filter(Boolean));
+  syncColumnsForm(w);
+}
+
+function syncColumnsForm(w) {
+  const count = w.body.querySelectorAll("[data-custom-row]").length;
+  w.body.querySelector("[data-none]").hidden = count > 0;
+  w.body.querySelector("[data-add-column]").disabled = count >= MAX_OWN_COLUMNS;
+}
+
+function onColumnsClick(w, event) {
+  const remove = event.target.closest("[data-custom-remove]");
+  if (event.target.closest("[data-add-column]")) {
+    const row = ownColumnRow({ id: newColumnId(), name: "", type: "text" }, false);
+    w.body.querySelector('[data-list="custom-columns"]').append(row);
+    row.querySelector("[data-custom-name]").focus();
+  } else if (remove) {
+    remove.closest("[data-custom-row]").remove();
+  } else {
+    return;
+  }
+  w.confirmed = null;
+  syncColumnsForm(w);
+}
+
+function onColumnsChange(w, event) {
+  const kind = event.target.closest("[data-custom-type]");
+  if (kind) kind.closest("[data-custom-row]").querySelector(".col-own-choices").hidden = kind.value !== "choice";
+  const copy = event.target.closest("[data-copy-from]");
+  if (copy?.value) buildColumnsForm(w, findProject(copy.value)?.columns || {}, copy.value);
+}
+
+// The setup the window describes, as the board takes it.
+function readColumnsForm(w) {
+  const builtin = {};
+  for (const row of w.body.querySelectorAll("[data-col-row]")) {
+    const standard = STANDARD_COLUMNS.find((c) => c.key === row.dataset.colRow);
+    const typed = row.querySelector("[data-col-name]").value.trim();
+    const label = typed === standard.label ? "" : typed;
+    const hidden = !row.querySelector("[data-col-show]").checked;
+    if (label || hidden) builtin[standard.key] = { ...(label && { label }), ...(hidden && { hidden: true }) };
+  }
+  const custom = [...w.body.querySelectorAll("[data-custom-row]")].map((row) => {
+    const type = row.querySelector("[data-custom-type]").value;
+    const options = [...new Set(row.querySelector("[data-custom-options]").value.split("\n").map((o) => o.trim()).filter(Boolean))];
+    return { id: row.dataset.customRow, name: row.querySelector("[data-custom-name]").value.trim(), type, ...(type === "choice" && { options }) };
+  });
+  return { builtin, custom };
+}
+
+// What's wrong with a setup, in words, or nothing if it can be saved.
+function columnsProblem({ builtin, custom }) {
+  if (custom.some((f) => !f.name)) return COLUMN_ERRORS.column_name_required;
+  const names = [...STANDARD_COLUMNS.map((c) => builtin[c.key]?.label || c.label), ...custom.map((f) => f.name)];
+  const twice = names.find((name, i) => names.findIndex((other) => personKey(other) === personKey(name)) !== i);
+  if (twice) return `Two columns are called ${twice}. Give one of them another name.`;
+  const empty = custom.find((f) => f.type === "choice" && !f.options.length);
+  if (empty) return `Add at least one choice for ${empty.name}, one per line.`;
+  const crowded = custom.find((f) => f.type === "choice" && (f.options.length > 30 || f.options.some((o) => o.length > 40)));
+  if (crowded) return `${crowded.name} takes up to 30 choices of 40 characters each.`;
+  return null;
+}
+
+async function submitColumns(w, event) {
+  event.preventDefault();
+  const columns = readColumnsForm(w);
+  const problem = columnsProblem(columns);
+  if (problem) return showWindowError(w, problem);
+
+  // Removing a column deletes what tasks have in it, so that takes a second press.
+  const kept = new Set(columns.custom.map((f) => f.id));
+  const filled = ownColumns(w.projectId).filter((f) => !kept.has(f.id))
+    .map((f) => [f.name, state.tasks.filter((t) => t.project_id === w.projectId && String(t.custom?.[f.id] ?? "") !== "").length])
+    .filter(([, count]) => count > 0);
+  const asking = JSON.stringify(filled);
+  if (filled.length && w.confirmed !== asking) {
+    w.confirmed = asking;
+    const which = filled.map(([name, count]) => `${name} is filled in on ${count} ${count === 1 ? "task" : "tasks"}`).join(", and ");
+    return showWindowError(w, `${which}. Removing ${filled.length === 1 ? "the column deletes that" : "those columns deletes that"} too. Press Save columns again to go ahead.`);
+  }
+
+  const button = w.body.querySelector('button[type="submit"]');
+  button.disabled = true;
+  const saved = await write(() => state.store.saveColumns(w.projectId, columns), null);
+  button.disabled = false;
+  if (!saved.ok) {
+    if (state.windows.get("columns") === w) showWindowError(w, COLUMN_ERRORS[saved.error?.code] || "The columns didn't save. Check your connection and try again.");
+    return;
+  }
+  const project = findProject(w.projectId);
+  if (project) project.columns = saved.result.columns || {};
+  closeWindow(w);
+  renderBoard();
+}
+
+$("columns-btn").addEventListener("click", openColumns);
 
 // ---------- The calendar ----------
 

@@ -140,12 +140,17 @@
         </summary>
         <div id="today-list" class="today-list"></div>
       </details>
-      <div class="task-filter">
-        <button id="filter-btn" class="btn btn-quiet btn-small" type="button" aria-expanded="false" aria-controls="filter-panel">Assigned to: Everyone</button>
-        <div id="filter-panel" class="filter-panel" role="group" aria-label="Show tasks assigned to" hidden>
-          <ul id="filter-list" class="filter-list"></ul>
-          <button id="filter-clear" class="link-btn" type="button" hidden>Show everyone</button>
+      <!-- Above the sheet: whose tasks it shows, and which columns this project has -->
+      <div class="sheet-tools">
+        <div class="task-filter">
+          <button id="filter-btn" class="btn btn-quiet btn-small" type="button" aria-expanded="false" aria-controls="filter-panel">Assigned to: Everyone</button>
+          <div id="filter-panel" class="filter-panel" role="group" aria-label="Show tasks assigned to" hidden>
+            <ul id="filter-list" class="filter-list"></ul>
+            <button id="filter-clear" class="link-btn" type="button" hidden>Show everyone</button>
+          </div>
         </div>
+        <span class="spacer"></span>
+        <button id="columns-btn" class="btn btn-quiet btn-small" type="button">Columns</button>
       </div>
       <div class="sheet" role="table" aria-label="Task list">
         <div class="sheet-head" role="row">
@@ -158,11 +163,7 @@
             </span>
             Task list
           </div>
-          <div class="head-tab" role="columnheader">Assign</div>
-          <div class="head-tab" role="columnheader">Urgency</div>
-          <div class="head-tab" role="columnheader">Deadline</div>
-          <div class="head-tab" role="columnheader">Status</div>
-          <div class="head-tab" role="columnheader">Progress</div>
+          <!-- The project's columns go here: the page draws them from its setup -->
         </div>
 
         <div id="task-rows" class="task-rows" role="rowgroup"></div>
