@@ -339,6 +339,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     mirrorTask: (id, targets) => rpc("movers_mirror_task", { p_token: token, p_id: id, p_targets: targets }),
     addUpdate: (id, text) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text }),
     addComment: (taskId, body, mentions) => rpc("movers_add_task_comment", { p_token: token, p_task_id: taskId, p_body: body, p_mentions: mentions }),
+    taskHistory: (taskId) => rpc("movers_task_history", { p_token: token, p_task_id: taskId }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
     saveProject: (id, name, color) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name, p_color: color }),
     saveColumns: (id, columns) => rpc("movers_save_project_columns", { p_token: token, p_id: id, p_columns: columns }),
@@ -2120,6 +2121,24 @@ function commentForm() {
     list);
 }
 
+// Fetches a task's whole history for its window, newest first. It's kept with the count it
+// was asked for, so it's fetched again only when the task has a change it doesn't have. One
+// that fails isn't tried again until the section is folded and opened.
+async function loadHistory(w, total) {
+  if (w.historyLoading === total) return;
+  w.historyLoading = total;
+  try {
+    const all = await state.store.taskHistory(w.taskId);
+    w.history = { asked: total, entries: [...all].reverse() };
+  } catch (error) {
+    if (error.code === "session_expired") return showGate("Your session ended. Enter the PIN to continue.");
+    w.historyFailed = true;
+  } finally {
+    w.historyLoading = null;
+  }
+  if (w.root.isConnected && findTask(w.taskId)) renderTaskWindow(w);
+}
+
 // Opens a task's comments without that counting as how this person keeps the section.
 function showComments(taskId) {
   const fold = state.windows.get(taskId)?.body.querySelector('[data-fold="comments"]');
@@ -2209,6 +2228,11 @@ function buildTaskWindow(w, task) {
   // The event doesn't travel up the page, so it's caught on the way down.
   w.body.addEventListener("toggle", (event) => {
     const name = event.target.dataset?.fold;
+    // Opening History is when the entries the task doesn't carry are fetched, and tried again if that failed.
+    if (name === "history" && event.target.open && findTask(w.taskId)) {
+      w.historyFailed = false;
+      renderTaskWindow(w);
+    }
     // Opened by the page itself, to show something: that's not this person's choice to keep.
     if (event.target.dataset?.quiet) return delete event.target.dataset.quiet;
     const states = foldStates();
@@ -2352,11 +2376,22 @@ function renderTaskWindow(w) {
       el("strong", {}, entry.by), " ",
       el("span", { class: "activity-time" }, timeAgo(entry.at)),
       el("span", { class: "activity-note" }, entry.text))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
-  setCount(w, "history", entries.length ? String(entries.length) : "");
-  renderList(w, "history", entries.map(entrySignature), () => (entries.length ? entries.map((entry) => (entry.kind === "note"
-    ? el("li", { class: "activity-posted" }, `${entry.by} posted an update `, when(entry), el("span", { class: "activity-note" }, `“${entry.text}”`))
-    : el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, when(entry))))
-    : [el("li", { class: "win-empty" }, "Nothing has happened to it yet.")]));
+  // A task carries its latest fifty entries, and the board keeps every one. When there are
+  // more, the rest are fetched once the section is open, and again when the count moves on.
+  const total = task.history_count ?? entries.length;
+  const whole = w.history?.asked === total ? w.history.entries : null;
+  if (!whole && total > entries.length && !w.historyFailed && w.body.querySelector('[data-fold="history"]').open) loadHistory(w, total);
+  const listed = whole || entries;
+  const earlier = Math.max(0, total - listed.length);
+  setCount(w, "history", total ? String(total) : "");
+  renderList(w, "history", [listed.map(entrySignature), earlier, !!w.historyFailed], () => (listed.length ? [
+    ...listed.map((entry) => (entry.kind === "note"
+      ? el("li", { class: "activity-posted" }, `${entry.by} posted an update `, when(entry), el("span", { class: "activity-note" }, `“${entry.text}”`))
+      : el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, when(entry)))),
+    earlier > 0 && el("li", { class: "win-empty", "data-history-more": true }, w.historyFailed
+      ? `The ${earlier} earlier ${earlier === 1 ? "entry" : "entries"} couldn't be loaded. Check your connection, then fold this section and open it again.`
+      : `Loading ${earlier} earlier ${earlier === 1 ? "entry" : "entries"}…`),
+  ].filter(Boolean) : [el("li", { class: "win-empty" }, "Nothing has happened to it yet.")]));
 
   // Comments, the newest first, with the people each one mentions standing out.
   const comments = [...(task.comments || [])].reverse();
