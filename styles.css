@@ -1303,6 +1303,16 @@ body::before {
 .activity-system { color: var(--muted); }
 .activity-note { display: block; margin-top: 1px; white-space: pre-wrap; }
 
+/* Comments on a task. Someone mentioned stands out, and this person's own name most. */
+.comment-list > li:not(.win-empty) { padding: 8px 10px; background: var(--surface-2); border-radius: 6px; }
+.mention { padding: 0 3px; font-weight: 600; color: var(--navy-deep); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; }
+.mention.is-me { color: var(--on-orange); background: var(--orange); border-color: var(--orange); }
+/* The people offered while an @ is being typed, under the box */
+.comment-form { position: relative; }
+.mention-options { position: absolute; top: 100%; left: 0; z-index: 5; min-width: 180px; max-width: 100%; margin-top: 3px; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-lift); }
+.mention-option { display: block; width: 100%; padding: 6px 9px; text-align: left; color: inherit; background: none; border: 0; border-radius: 5px; cursor: pointer; }
+.mention-option:hover, .mention-option.is-active { background: var(--surface-2); }
+
 /* Too narrow for the sheet: each row becomes a labelled card */
 @media (max-width: 980px) {
   .sheet { padding-left: 0; }

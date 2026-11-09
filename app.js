@@ -338,6 +338,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     // Everywhere a task is mirrored, as the whole list: {task_id} for inside a task, {project_id} for a project's list.
     mirrorTask: (id, targets) => rpc("movers_mirror_task", { p_token: token, p_id: id, p_targets: targets }),
     addUpdate: (id, text) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text }),
+    addComment: (taskId, body, mentions) => rpc("movers_add_task_comment", { p_token: token, p_task_id: taskId, p_body: body, p_mentions: mentions }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
     saveProject: (id, name, color) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name, p_color: color }),
     saveColumns: (id, columns) => rpc("movers_save_project_columns", { p_token: token, p_id: id, p_columns: columns }),
@@ -1702,9 +1703,10 @@ function tasksInOrder() {
     .flatMap((t) => [t, ...subtasksOf(t.id)]);
 }
 
-// One task or subtask for a meeting. The project comes first, which lists that project's
-// tasks, and typing narrows the list. Once picked, the task shows as a tag that can be
-// taken off again.
+// One task for a meeting. The project comes first, which lists that project's tasks, and
+// typing narrows the list. Once picked, the task shows as a tag that can be taken off
+// again. Meetings are set for tasks, so subtasks aren't offered: one linked to a subtask
+// earlier keeps showing it until it's changed.
 function taskPicker(taskId = null) {
   let current = findTask(taskId) ? taskId : null;
   const projects = [...state.projects].sort((a, b) => a.position - b.position);
@@ -1718,7 +1720,7 @@ function taskPicker(taskId = null) {
   const everywhere = () => project.value === "all";
   const matches = () => {
     const typed = box.value.trim().toLowerCase();
-    return tasksInOrder().filter((t) => (everywhere() || isIn(t, project.value)) && t.title.toLowerCase().includes(typed));
+    return tasksInOrder().filter((t) => !t.parent_id && (everywhere() || isIn(t, project.value)) && t.title.toLowerCase().includes(typed));
   };
   const render = () => {
     const task = findTask(current);
@@ -1975,7 +1977,7 @@ function openTask(id) {
 // open is the same for every task: as this person last left them on this device, and
 // before that, the parts worked on most (subtasks and updates) open and the rest folded.
 const FOLDS_KEY = "board.taskFolds";
-const FOLD_DEFAULTS = { info: false, subtasks: true, updates: true, meetings: false, files: false };
+const FOLD_DEFAULTS = { info: false, subtasks: true, updates: true, comments: true, meetings: false, files: false };
 
 function foldStates() {
   try {
@@ -1989,6 +1991,144 @@ function taskFold(name, heading, ...children) {
   return el("details", { class: `win-fold${name === "updates" ? " win-updates" : ""}`, "data-fold": name, open: foldStates()[name] === true },
     el("summary", { class: "win-heading" }, ...heading),
     el("div", { class: "win-fold-body" }, ...children));
+}
+
+// ---------- Comments, and mentioning people in them ----------
+
+// Everyone a comment can mention: the people the board knows, each once.
+function knownPeople() {
+  const names = new Map();
+  for (const name of state.people) {
+    const key = personKey(name);
+    if (key && !names.has(key)) names.set(key, name.trim());
+  }
+  return [...names.values()];
+}
+
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+// Where the given names are mentioned in a comment: each "@Name", the longest name that
+// fits, and only where the @ starts a word, so an email address isn't a mention.
+function mentionSpans(text, names) {
+  const lower = text.toLowerCase();
+  const byLength = [...names].sort((a, b) => b.length - a.length);
+  const spans = [];
+  for (let at = lower.indexOf("@"); at !== -1; at = lower.indexOf("@", at + 1)) {
+    if (at > 0 && (WORD_CHAR.test(text[at - 1]) || text[at - 1] === ".")) continue;
+    const name = byLength.find((n) => n && lower.startsWith(n.toLowerCase(), at + 1) && !WORD_CHAR.test(text[at + 1 + n.length] || ""));
+    if (!name) continue;
+    spans.push({ start: at, end: at + 1 + name.length, name });
+    at += name.length;
+  }
+  return spans;
+}
+
+// The people a comment being posted mentions, each once. The board is told, since a name
+// can have spaces in it and only the page knows where one ends.
+const mentionsIn = (text) => [...new Map(mentionSpans(text, knownPeople()).map((span) => [personKey(span.name), span.name])).values()];
+
+// A comment's words, with the people it mentions standing out, and this person most.
+function commentBody(comment) {
+  const parts = [];
+  let from = 0;
+  for (const span of mentionSpans(comment.body, comment.mentions || [])) {
+    if (span.start > from) parts.push(comment.body.slice(from, span.start));
+    parts.push(el("span", { class: `mention${personKey(span.name) === personKey(state.name) ? " is-me" : ""}` }, comment.body.slice(span.start, span.end)));
+    from = span.end;
+  }
+  if (from < comment.body.length) parts.push(comment.body.slice(from));
+  return parts;
+}
+
+// The box a comment is written in. Typing @ lists the people on the board, narrowed by
+// what follows it: Enter, Tab or a click puts the name in, and Escape puts the list away.
+function commentForm() {
+  const input = textInput({ maxlength: "2000", placeholder: "Write a comment. Type @ to mention someone", "aria-label": "New comment", autocomplete: "off", "data-input": "text" });
+  const list = el("ul", { class: "mention-options", "data-mention-options": true, hidden: true });
+  let found = [];
+  let active = 0;
+
+  // The @ being typed: the last one before the caret that starts a word, and what follows it.
+  const typing = () => {
+    const before = input.value.slice(0, input.selectionStart ?? input.value.length);
+    const at = before.lastIndexOf("@");
+    if (at === -1 || (at > 0 && (WORD_CHAR.test(before[at - 1]) || before[at - 1] === "."))) return null;
+    const typed = before.slice(at + 1).toLowerCase();
+    return typed.length > 40 ? null : { at, typed };
+  };
+  const render = () => {
+    list.hidden = !found.length;
+    list.replaceChildren(...found.map((name, i) => el("li", {},
+      el("button", { class: `mention-option${i === active ? " is-active" : ""}`, type: "button", tabindex: "-1", "data-mention": name }, name))));
+  };
+  const close = () => {
+    found = [];
+    render();
+  };
+  const look = () => {
+    const now = typing();
+    const me = personKey(state.name);
+    found = now
+      ? knownPeople()
+        .filter((name) => personKey(name) !== me && (personKey(name).startsWith(now.typed) || personKey(name).includes(` ${now.typed}`)))
+        .sort((a, b) => a.localeCompare(b))
+        .slice(0, 6)
+      : [];
+    active = 0;
+    render();
+  };
+  const pick = (name) => {
+    const now = typing();
+    if (!now) return close();
+    const caret = input.selectionStart ?? input.value.length;
+    const start = `${input.value.slice(0, now.at)}@${name} `;
+    input.value = start + input.value.slice(caret);
+    input.setSelectionRange(start.length, start.length);
+    close();
+    input.focus();
+  };
+
+  input.addEventListener("input", look);
+  input.addEventListener("click", look);
+  input.addEventListener("blur", close);
+  input.addEventListener("keydown", (event) => {
+    if (!found.length) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      active = (active + (event.key === "ArrowDown" ? 1 : found.length - 1)) % found.length;
+      render();
+    } else if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault(); // puts the name in, rather than posting the comment or moving on
+      pick(found[active]);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation(); // Esc here puts the list away, not the whole window
+      close();
+    }
+  });
+  // On the way down, before the press would take the caret out of the box.
+  list.addEventListener("pointerdown", (event) => {
+    const option = event.target.closest("[data-mention]");
+    if (!option) return;
+    event.preventDefault();
+    pick(option.dataset.mention);
+  });
+
+  return el("form", { class: "win-form comment-form", "data-form": "comment", novalidate: true },
+    input,
+    el("button", { class: "btn btn-primary", type: "submit" }, "Comment"),
+    list);
+}
+
+// Opens a task's comments without that counting as how this person keeps the section.
+function showComments(taskId) {
+  const fold = state.windows.get(taskId)?.body.querySelector('[data-fold="comments"]');
+  if (!fold) return;
+  if (!fold.open) {
+    fold.dataset.quiet = "1";
+    fold.open = true;
+  }
+  fold.scrollIntoView({ block: "nearest" });
 }
 
 function buildTaskWindow(w, task) {
@@ -2029,18 +2169,27 @@ function buildTaskWindow(w, task) {
       el("details", { class: "win-history" },
         el("summary", {}, "History", el("span", { class: "win-count", "data-count": "history" })),
         el("ul", { class: "activity-list", "data-list": "history" }))),
+    // What people say about it. Typing @ mentions someone, who is then told.
+    taskFold("comments", ["Comments", count("comments")],
+      commentForm(),
+      el("ul", { class: "activity-list comment-list", "data-list": "comments" })),
     // The meetings set for this task, and a way to set another without leaving it.
+    // Meetings, files and links are declared on the task. A subtask has these two sections
+    // only for what was put on it before that, with no way to add more: they stay hidden
+    // while it has none.
     taskFold("meetings", ["Meetings", count("meetings")],
+      isSubtask && el("p", { class: "hint" }, "Meetings are now set on the task. This one was set for the subtask earlier."),
       el("ul", { class: "win-list", "data-list": "meetings" }),
-      el("div", { class: "win-form" }, el("button", { class: "btn btn-quiet", type: "button", "data-set-meeting": true }, "Set a meeting"))),
+      !isSubtask && el("div", { class: "win-form" }, el("button", { class: "btn btn-quiet", type: "button", "data-set-meeting": true }, "Set a meeting"))),
     taskFold("files", ["Files and links", count("attachments")],
+      isSubtask && el("p", { class: "hint" }, "Files and links now go on the task. These were added to the subtask earlier."),
       el("h4", { class: "win-subheading" }, "Files"),
       el("ul", { class: "win-list", "data-list": "files" }),
-      el("div", { class: "win-form" },
+      !isSubtask && el("div", { class: "win-form" },
         el("label", { class: "btn btn-quiet win-upload" }, "Upload files", el("input", { type: "file", multiple: true, "data-upload": true }))),
       el("h4", { class: "win-subheading" }, "Links"),
       el("ul", { class: "win-list", "data-list": "links" }),
-      el("form", { class: "win-form", "data-form": "link", novalidate: true },
+      !isSubtask && el("form", { class: "win-form", "data-form": "link", novalidate: true },
         textInput({ maxlength: "2000", placeholder: "Paste a link", "aria-label": "Link address", "data-input": "url", inputmode: "url" }),
         textInput({ class: "input is-narrow", maxlength: "255", placeholder: "Title (optional)", "aria-label": "Link title", "data-input": "title" }),
         el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
@@ -2059,6 +2208,8 @@ function buildTaskWindow(w, task) {
   // The event doesn't travel up the page, so it's caught on the way down.
   w.body.addEventListener("toggle", (event) => {
     const name = event.target.dataset?.fold;
+    // Opened by the page itself, to show something: that's not this person's choice to keep.
+    if (event.target.dataset?.quiet) return delete event.target.dataset.quiet;
     const states = foldStates();
     if (!name || states[name] === event.target.open) return;
     writeStorage("localStorage", FOLDS_KEY, JSON.stringify({ ...states, [name]: event.target.open }));
@@ -2202,7 +2353,22 @@ function renderTaskWindow(w) {
   renderList(w, "history", history.map(entrySignature), () => history.map((entry) =>
     el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, el("span", { class: "activity-time" }, timeAgo(entry.at)))));
 
+  // Comments, the newest first, with the people each one mentions standing out.
+  const comments = [...(task.comments || [])].reverse();
+  setCount(w, "comments", comments.length ? String(comments.length) : "");
+  renderList(w, "comments", comments.map((c) => [c.id, c.body, c.mentions, c.created_by, timeAgo(c.created_at), state.name]), () =>
+    comments.length ? comments.map((c) => el("li", { "data-comment": c.id },
+      el("strong", {}, c.created_by), " ",
+      el("span", { class: "activity-time" }, timeAgo(c.created_at)),
+      el("span", { class: "activity-note" }, ...commentBody(c)))) : [el("li", { class: "win-empty" }, "No comments yet.")]);
+
   const attachments = task.attachments || [];
+  // Meetings, files and links are declared on the task. A subtask shows those sections
+  // only while it still has some that were put on it earlier.
+  if (task.parent_id) {
+    w.body.querySelector('[data-fold="meetings"]').hidden = meetings.length === 0;
+    w.body.querySelector('[data-fold="files"]').hidden = attachments.length === 0;
+  }
   setCount(w, "attachments", attachments.length ? String(attachments.length) : "");
   const files = attachments.filter((a) => a.kind === "file");
   renderList(w, "files", [files.map((f) => [f.id, f.title]), w.uploading], () => [
@@ -2288,6 +2454,12 @@ async function onWindowSubmit(w, event) {
     if (!text) return input("text").focus();
     action = () => state.store.addUpdate(w.taskId, text);
     failure = "That update didn't post. Check your connection and try again.";
+    focusAfter = input("text");
+  } else if (form.dataset.form === "comment") {
+    const text = input("text").value.trim();
+    if (!text) return input("text").focus();
+    action = () => state.store.addComment(w.taskId, text, mentionsIn(text));
+    failure = "That comment didn't post. Check your connection and try again.";
     focusAfter = input("text");
   } else if (form.dataset.form === "link") {
     let url = input("url").value.trim();
@@ -3599,6 +3771,7 @@ function notificationLines(n) {
     return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, n.action === "changed" ? `now ${when}` : when]];
   }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
+  if (n.action === "mentioned") return [`${n.by_name} mentioned you in a comment`, where, `“${String(n.detail || "")}”`];
   if (n.action === "edited" || n.action === "noted") {
     // Changes by the same person fold into one notice: the latest, and a count of the rest.
     const posted = n.action === "noted";
@@ -3703,7 +3876,7 @@ function renderNotifications() {
           change && el("span", { class: "notify-task notify-change" }, change),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in comments, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {
@@ -3745,10 +3918,12 @@ $("notify-read-all").addEventListener("click", () => markNotificationsRead(null)
 $("notify-list").addEventListener("click", (event) => {
   const item = event.target.closest("[data-notification]");
   if (!item) return;
+  const mention = state.notifications.find((n) => n.id === item.dataset.notification)?.action === "mentioned";
   markNotificationsRead([item.dataset.notification]);
   // On a phone the list is its own page, so leave it up when there's nothing to go to.
   if (!isPhone() || findTask(item.dataset.task) || findMeeting(item.dataset.openMeeting)) closeNotifications();
   openTask(item.dataset.task);
+  if (mention) showComments(item.dataset.task); // a mention opens the task where it was said
   openMeeting(item.dataset.openMeeting);
 });
 
