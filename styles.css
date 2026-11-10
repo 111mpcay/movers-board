@@ -676,6 +676,19 @@ body::before {
 }
 .project-card:hover { box-shadow: var(--shadow-lift); }
 
+/* Archived projects: under the cards, shown when asked for, and quieter than the rest. */
+.archived-toggle { display: block; margin-top: 20px; font-size: 0.9rem; }
+.archived-box { margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.archived-box .hint { max-width: 78ch; margin: 0 0 12px; }
+.project-card.is-archived { border-style: dashed; opacity: 0.72; }
+.project-card.is-archived:hover, .project-card.is-archived:focus-visible { opacity: 1; }
+.project-tag { display: inline-block; margin-top: 7px; padding: 1px 8px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; border: 1px solid currentColor; border-radius: 10px; }
+/* On an archived project's own page, and on each of its tasks: what being archived means. */
+.archived-note, .archived-task-note { overflow-wrap: anywhere; font-weight: 500; color: var(--warn-fg); background: var(--warn-bg); border-radius: 6px; }
+.archived-note { margin: 0 0 14px; padding: 8px 12px; font-size: 0.9rem; }
+.archived-task-note { padding: 6px 10px; font-size: 0.84rem; }
+.btn-quiet.armed { color: var(--warn-fg); background: var(--warn-bg); border-color: var(--warn-fg); }
+
 /* A project's color. Each one is dark enough for white text, in both themes. */
 .color-navy { --pick: #2a4460; }
 .color-blue { --pick: #1f5f99; }

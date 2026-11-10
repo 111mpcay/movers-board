@@ -61,6 +61,7 @@ const state = {
   projects: [],
   projectId: null, // the project whose page is showing; null on the cards screen
   leavingProject: null, // a project this person is deleting, so its page goes quietly
+  archiveAsk: 0, // the timer on the Archive button's "are you sure", while it's asking
   tasks: [],
   filter: readFilter(), // the people whose tasks show, as name keys; "" is unassigned, and empty shows everyone
   keepShown: new Set(), // tasks just added, which stay in view under the filter until it's next changed
@@ -277,6 +278,15 @@ function mirrorNote(task, projectId) {
 }
 
 // The columns a project added for itself.
+// An archived project is put away, not deleted (supabase/035_archive_projects.sql). The
+// board sends no reminders or notifications for its tasks until someone brings it back, and
+// here they're left out of the People page and the counts.
+const isArchived = (project) => !!project?.archived_at;
+// A task is put away with its projects: when every one it's in is archived, the one it
+// lives in and any it's mirrored into. One that still shows in an active project is live.
+const inArchive = (task) => projectsOf(task).every((id) => isArchived(findProject(id)));
+const ARCHIVED_TASK_NOTE = "This is in an archived project. Nobody is notified about changes, updates or mentions here, and it sends no due reminders.";
+
 const ownColumns = (projectId) => findProject(projectId)?.columns?.custom || [];
 // And those of every project a task is in, the one it lives in first, each column once.
 function ownColumnsOf(task) {
@@ -367,6 +377,8 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     saveProject: (id, name, color) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name, p_color: color }),
     saveColumns: (id, columns) => rpc("movers_save_project_columns", { p_token: token, p_id: id, p_columns: columns }),
     moveProject: (id, position) => rpc("movers_move_project", { p_token: token, p_id: id, p_position: position }),
+    // Puts a project away, or with `archived` false brings it back.
+    archiveProject: (id, archived) => rpc("movers_archive_project", { p_token: token, p_id: id, p_archived: archived }),
     removeProject: (id) => rpc("movers_delete_project", { p_token: token, p_id: id }),
     addLink: (taskId, title, url) => rpc("movers_add_link", { p_token: token, p_task_id: taskId, p_title: title, p_url: url }),
     removeAttachment: (id) => rpc("movers_remove_attachment", { p_token: token, p_id: id }),
@@ -625,20 +637,49 @@ function projectPercent(id) {
   return Math.round(tasks.reduce((sum, t) => sum + t.progress, 0) / tasks.length);
 }
 
-function renderProjectCards() {
-  const projects = [...state.projects].sort((a, b) => a.position - b.position);
-  $("no-projects").hidden = projects.length > 0;
+const SHOW_ARCHIVED_KEY = "board.showArchived"; // "1" on a device where the archived projects are showing
+
+// One list of project cards. Only rebuilt when something on a card has changed.
+function drawProjectCards(list, projects, archived) {
   const cards = projects.map((p) => [p.id, p.name, projectPercent(p.id), p.color || "default"]);
-  const list = $("project-cards");
   const signature = JSON.stringify(cards);
   if (list.dataset.sig === signature) return;
   list.dataset.sig = signature;
   list.replaceChildren(...cards.map(([id, name, percent, color]) =>
-    el("button", { class: `project-card color-${color}`, type: "button", "data-project": id },
+    el("button", { class: `project-card color-${color}${archived ? " is-archived" : ""}`, type: "button", "data-project": id },
       el("span", { class: "project-name" }, name),
+      archived && el("span", { class: "project-tag" }, "Archived"),
       el("span", { class: "project-progress" },
         el("span", { class: "project-bar" }, el("i", { style: `width: ${percent}%` })),
         el("span", { class: "project-percent" }, `${percent}%`)))));
+}
+
+// The projects in use, as cards. The archived ones are under them, out of the way until
+// someone asks to see them, which this device then remembers.
+function renderProjectCards() {
+  const projects = [...state.projects].sort((a, b) => a.position - b.position);
+  const active = projects.filter((p) => !isArchived(p));
+  const archived = projects.filter(isArchived);
+  $("no-projects").hidden = active.length > 0;
+  $("no-projects").textContent = archived.length ? "Every project is archived. Add a new one, or bring one back from below." : "No projects yet. Add the first one to get started.";
+  drawProjectCards($("project-cards"), active, false);
+  const showing = archived.length > 0 && readStorage("localStorage", SHOW_ARCHIVED_KEY) === "1";
+  $("archived-toggle").hidden = !archived.length;
+  $("archived-toggle").textContent = showing ? "Hide archived projects" : `Show archived projects (${archived.length})`;
+  $("archived-toggle").setAttribute("aria-expanded", String(showing));
+  $("archived-box").hidden = !showing;
+  drawProjectCards($("archived-cards"), showing ? archived : [], true);
+}
+
+$("archived-toggle").addEventListener("click", () => {
+  writeStorage("localStorage", SHOW_ARCHIVED_KEY, $("archived-box").hidden ? "1" : null);
+  renderProjectCards();
+});
+
+// What an archived project's page says about it, above its task list.
+function archivedNote(project) {
+  const on = new Date(project.archived_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return `Archived${project.archived_by ? ` by ${project.archived_by}` : ""} on ${on}. Its tasks and subtasks send no reminders or notifications, and are left out of the People page and the board's counts. Nothing was deleted: Unarchive brings it all back.`;
 }
 
 function renderProjectPage() {
@@ -649,6 +690,16 @@ function renderProjectPage() {
   $("project-title").textContent = project.name;
   $("project-bar-fill").style.width = `${percent}%`;
   $("project-percent").textContent = `${percent}%`;
+  // Anyone can archive a project or bring it back. Archiving asks once first.
+  const archived = isArchived(project);
+  const asking = !archived && !!state.archiveAsk;
+  $("archive-project-btn").classList.toggle("armed", asking);
+  $("archive-project-btn").textContent = archived ? "Unarchive" : asking ? "Archive for everyone?" : "Archive";
+  $("archive-project-btn").title = archived
+    ? "Bring this project back. Its tasks send reminders and notifications again."
+    : "Put this project away without deleting anything. Its tasks stop sending reminders and notifications until it's brought back.";
+  $("archived-note").hidden = !archived;
+  $("archived-note").textContent = archived ? archivedNote(project) : "";
   // Deleting is offered to whoever created the project. Everyone else is told who that is.
   const mine = canDelete(project);
   $("delete-project-btn").hidden = !mine;
@@ -692,17 +743,20 @@ window.addEventListener("hashchange", () => {
   if (!$("gate").hidden) return;
   showProjectError("project-error", null);
   setRenaming(false);
+  askToArchive(false); // a question asked on one project's page isn't carried to the next
   renderBoard();
   window.scrollTo(0, 0);
 });
 
-$("project-cards").addEventListener("click", (event) => {
+function openProjectCard(event) {
   const card = event.target.closest("[data-project]");
   // A drag ends with a click on the same card, which shouldn't open the project.
   if (card && !state.dragging && Date.now() - state.lastDrop > 300) {
     location.hash = `project=${card.dataset.project}`;
   }
-});
+}
+$("project-cards").addEventListener("click", openProjectCard);
+$("archived-cards").addEventListener("click", openProjectCard);
 
 function colorSwatches() {
   return Object.entries(PROJECT_COLORS).map(([color, label]) =>
@@ -752,6 +806,37 @@ $("rename-project-form").addEventListener("submit", async (event) => {
     setRenaming(false);
   } else {
     showProjectError("project-error", "That didn't save. Check your connection and try again.");
+  }
+});
+
+// Archiving quiets a project for everyone, so its button asks once before it does, and
+// takes the question back after a few seconds. Bringing a project back doesn't ask.
+function askToArchive(on) {
+  clearTimeout(state.archiveAsk);
+  state.archiveAsk = on ? setTimeout(() => askToArchive(false), 4000) : 0;
+  renderProjectPage();
+}
+
+$("archive-project-btn").addEventListener("click", async () => {
+  const button = $("archive-project-btn");
+  const project = findProject(state.projectId);
+  if (!project) return;
+  const archiving = !isArchived(project);
+  if (archiving && !state.archiveAsk) return askToArchive(true);
+  askToArchive(false);
+  button.disabled = true;
+  const result = await write(() => state.store.archiveProject(project.id, archiving), null);
+  button.disabled = false;
+  if (result.ok) {
+    showProjectError("project-error", null);
+    // Shown straight away. The board's next read confirms it.
+    const now = findProject(project.id);
+    if (now) Object.assign(now, { archived_at: result.result?.archived_at ?? null, archived_by: result.result?.archived_by ?? null });
+    renderBoard();
+  } else if (result.error) {
+    showProjectError("project-error", result.error.code === "project_not_found"
+      ? "This project has been deleted."
+      : `That project wasn't ${archiving ? "archived" : "brought back"}. Check your connection and try again.`);
   }
 });
 
@@ -984,8 +1069,10 @@ function sheetFitRule(needed) {
 }`;
 }
 
+// The count by the board's name: this project's open tasks on its page, archived or not,
+// and everywhere else the open tasks of every project that isn't archived.
 function renderSummary() {
-  const open = state.tasks.filter((t) => !t.parent_id && t.status !== "done" && (!state.projectId || isListedIn(t, state.projectId)));
+  const open = state.tasks.filter((t) => !t.parent_id && t.status !== "done" && (state.projectId ? isListedIn(t, state.projectId) : !inArchive(t)));
   const overdue = open.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
   const today = open.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
   const parts = [el("span", {}, `${open.length} open`)];
@@ -1883,7 +1970,8 @@ function tasksInOrder() {
 // earlier keeps showing it until it's changed.
 function taskPicker(taskId = null) {
   let current = findTask(taskId) ? taskId : null;
-  const projects = [...state.projects].sort((a, b) => a.position - b.position);
+  // Archived projects aren't offered, and neither are their tasks under "All projects".
+  const projects = state.projects.filter((p) => !isArchived(p)).sort((a, b) => a.position - b.position);
   const project = el("select", { class: "input", "aria-label": "Project the task is in", "data-task-project": true },
     el("option", { value: "" }, "Choose a project"),
     ...projects.map((p) => el("option", { value: p.id }, p.name)),
@@ -1894,7 +1982,7 @@ function taskPicker(taskId = null) {
   const everywhere = () => project.value === "all";
   const matches = () => {
     const typed = box.value.trim().toLowerCase();
-    return tasksInOrder().filter((t) => !t.parent_id && (everywhere() || isIn(t, project.value)) && t.title.toLowerCase().includes(typed));
+    return tasksInOrder().filter((t) => !t.parent_id && (everywhere() ? !inArchive(t) : isIn(t, project.value)) && t.title.toLowerCase().includes(typed));
   };
   const render = () => {
     const task = findTask(current);
@@ -2004,7 +2092,8 @@ function mirrorPicker(taskId) {
 
   const places = () => mirrorsOf(findTask(taskId) || {});
   const targetOf = (m) => (m.task_id ? { task_id: m.task_id } : { project_id: m.project_id });
-  const inOrder = () => [...state.projects].sort((a, b) => a.position - b.position);
+  // The projects a task can be mirrored into: the ones that aren't archived.
+  const inOrder = () => state.projects.filter((p) => !isArchived(p)).sort((a, b) => a.position - b.position);
   // The tasks of the chosen project that could hold this one: whole tasks that live there,
   // other than itself and the ones that hold it already.
   function holders() {
@@ -2019,7 +2108,7 @@ function mirrorPicker(taskId) {
   function render() {
     const task = findTask(taskId);
     if (!task) return;
-    if (projectId && !findProject(projectId)) projectId = null; // the project was deleted meanwhile
+    if (projectId && (!findProject(projectId) || isArchived(findProject(projectId)))) projectId = null; // the project was deleted or archived meanwhile
     const shown = places().map((m) => [m.project_id, m.task_id, findProject(m.project_id)?.name, findTask(m.task_id)?.title]);
     const choice = !adding ? null : !projectId
       ? inOrder().map((p) => [p.id, p.name])
@@ -2757,6 +2846,8 @@ function buildTaskWindow(w, task) {
     detailsField,
     // Whose focus task this is, when it's someone's.
     el("p", { class: "focus-for", "data-focus-for": true, hidden: true }),
+    // While its project is archived: what's written here reaches nobody's notifications.
+    el("p", { class: "archived-task-note", role: "note", "data-archived-note": true, hidden: true }, ARCHIVED_TASK_NOTE),
     // Outside the sections, so it shows whichever of them is folded away.
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
     // Who it's for, when it's due and where it stands. Folded, its heading says the gist.
@@ -2889,12 +2980,16 @@ function renderTaskWindow(w) {
   if (w.chip) w.chip.textContent = title;
 
   const projectSelect = w.body.querySelector('[data-field="project_id"]');
-  const projectOptions = JSON.stringify(state.projects.map((p) => [p.id, p.name]));
+  // The projects it can move to: the ones that aren't archived, and the one it's in.
+  const offered = state.projects.filter((p) => !isArchived(p) || p.id === task.project_id).map((p) => [p.id, isArchived(p) ? `${p.name} (archived)` : p.name]);
+  const projectOptions = JSON.stringify(offered);
   if (projectSelect && projectSelect.dataset.sig !== projectOptions && projectSelect !== document.activeElement) {
     projectSelect.dataset.sig = projectOptions;
-    projectSelect.replaceChildren(...state.projects.map((p) => el("option", { value: p.id }, p.name)));
+    projectSelect.replaceChildren(...offered.map(([id, name]) => el("option", { value: id }, name)));
     projectSelect.value = task.project_id;
   }
+  const quiet = w.body.querySelector("[data-archived-note]");
+  if (quiet) quiet.hidden = !inArchive(task);
   for (const name of ["title", "details", "deadline", "urgency", "status", "project_id"]) {
     setFieldValue(w, name, task[name]);
   }
@@ -4871,8 +4966,10 @@ const URGENCY_ORDER = ["critical", "high", "normal", "low"];
 // it's assigned to. The heaviest urgent load comes first, since that's where work piles
 // up. Work nobody has goes last.
 function workload() {
-  const open = state.tasks.filter((t) => t.status !== "done");
-  const done = state.tasks.filter((t) => t.status === "done");
+  // What's in an archived project isn't anyone's load while it's put away.
+  const live = state.tasks.filter((t) => !inArchive(t));
+  const open = live.filter((t) => t.status !== "done");
+  const done = live.filter((t) => t.status === "done");
   const has = (task, key) => task.assignees.some((name) => personKey(name) === key);
   const rank = (task) => URGENCY_ORDER.indexOf(task.urgency);
   const mostUrgentFirst = (a, b) => rank(a) - rank(b) || (a.deadline || "9999").localeCompare(b.deadline || "9999") || a.title.localeCompare(b.title);
@@ -4911,11 +5008,12 @@ $("people-tab-load").addEventListener("click", () => setPeopleView("load"));
 $("people-tab-tasks").addEventListener("click", () => setPeopleView("tasks"));
 $("people-tab-subtasks").addEventListener("click", () => setPeopleView("subtasks"));
 
-// Every subtask assigned to this person, in every project: what's still to do under the
-// project and the task it belongs to, in the board's order, and what's done folded away.
+// Every subtask assigned to this person, in every project that isn't archived: what's still
+// to do under the project and the task it belongs to, in the board's order, and what's done
+// folded away.
 function renderMySubtasks() {
   const me = personKey(state.name);
-  const mine = tasksInOrder().filter((t) => t.parent_id && t.assignees.some((name) => personKey(name) === me));
+  const mine = tasksInOrder().filter((t) => t.parent_id && !inArchive(t) && t.assignees.some((name) => personKey(name) === me));
   const pending = mine.filter((t) => t.status !== "done");
   const done = mine.filter((t) => t.status === "done");
   const overdue = pending.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
@@ -4993,19 +5091,20 @@ $("my-subtasks").addEventListener("change", (event) => {
 // everyone sees them: on the person's card, and on each task. The board keeps them.
 const MAX_FOCUS = 3;
 const bySetAt = (a, b) => a.set_at.localeCompare(b.set_at);
-// A person's focus tasks, in the order they tagged them.
-const focusIdsOf = (key) => (state.focus || []).filter((f) => key && f.person_key === key).sort(bySetAt).map((f) => f.task_id).filter((id) => findTask(id));
+// A person's focus tasks, in the order they tagged them. One in an archived project is out
+// of the way with it, and doesn't hold one of the three places until the project is back.
+const focusIdsOf = (key) => (state.focus || []).filter((f) => key && f.person_key === key).sort(bySetAt).map((f) => f.task_id).filter((id) => findTask(id) && !inArchive(findTask(id)));
 // Whose focus task this is, by name, in the order they tagged it.
 const focusNames = (taskId) => (state.focus || []).filter((f) => f.task_id === taskId).sort(bySetAt).map((f) => f.name);
 
-// Every task assigned to this person, main or supporting, in every project: the ones they're
-// focusing on, then all that are open, the most urgent first and then the soonest due, and
-// what's done folded away. Subtasks have a tab of their own.
+// Every task assigned to this person, main or supporting, in every project that isn't
+// archived: the ones they're focusing on, then all that are open, the most urgent first and
+// then the soonest due, and what's done folded away. Subtasks have a tab of their own.
 function renderMyTasks() {
   const me = personKey(state.name);
   const rank = (t) => URGENCY_ORDER.indexOf(t.urgency);
   const mostUrgentFirst = (a, b) => rank(a) - rank(b) || (a.deadline || "9999").localeCompare(b.deadline || "9999") || a.title.localeCompare(b.title);
-  const mine = state.tasks.filter((t) => !t.parent_id && t.assignees.some((name) => personKey(name) === me));
+  const mine = state.tasks.filter((t) => !t.parent_id && !inArchive(t) && t.assignees.some((name) => personKey(name) === me));
   const open = mine.filter((t) => t.status !== "done").sort(mostUrgentFirst);
   const done = mine.filter((t) => t.status === "done").sort((a, b) => String(b.done_at || "").localeCompare(String(a.done_at || "")));
   const focus = focusIdsOf(me).filter((id) => open.some((t) => t.id === id));

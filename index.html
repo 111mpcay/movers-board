@@ -132,6 +132,12 @@
       <p id="projects-error" class="form-error" role="alert" hidden></p>
       <div id="project-cards" class="project-cards"></div>
       <p id="no-projects" class="win-empty" hidden>No projects yet. Add the first one to get started.</p>
+      <!-- Archived projects: put away under the cards, until someone asks to see them -->
+      <button id="archived-toggle" class="link-btn archived-toggle" type="button" aria-expanded="false" aria-controls="archived-box" hidden></button>
+      <section id="archived-box" class="archived-box" aria-label="Archived projects" hidden>
+        <p class="hint">Archived projects are kept as they were. Their tasks and subtasks send no reminders or notifications, and are left out of the People page and the board's counts. Open one to bring it back.</p>
+        <div id="archived-cards" class="project-cards"></div>
+      </section>
     </main>
 
     <!-- A project's own page: its task list -->
@@ -153,10 +159,13 @@
         </div>
         <span class="spacer"></span>
         <button id="rename-project-btn" class="btn btn-quiet btn-small" type="button">Edit</button>
+        <button id="archive-project-btn" class="btn btn-quiet btn-small" type="button" title="Put this project away without deleting anything. Its tasks stop sending reminders and notifications until it's brought back.">Archive</button>
         <button id="delete-project-btn" class="btn btn-danger btn-small" type="button">Delete project</button>
         <span id="delete-project-note" class="delete-note" hidden></span>
       </div>
       <p id="project-error" class="form-error" role="alert" hidden></p>
+      <!-- While the project is archived: who put it away, and what that means -->
+      <p id="archived-note" class="archived-note" role="status" hidden></p>
       <!-- What people changed in this project today, task by task -->
       <details id="today-summary" class="today">
         <summary class="today-head">
