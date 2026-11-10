@@ -1092,6 +1092,7 @@ function renderRows() {
   if (list.dataset.project !== String(state.projectId)) {
     list.dataset.project = String(state.projectId);
     list.replaceChildren();
+    showQuickError(null); // a name refused in the last project says nothing about this one
   }
   const existing = new Map([...list.children].map((row) => [row.dataset.id, row]));
   const wanted = new Set(tasks.map((t) => t.id));
@@ -1162,6 +1163,28 @@ function refreshRow(id, focusField) {
 async function updateTask(id, changes, focusField) {
   const task = findTask(id);
   if (!task) return;
+  // A new name can't be one another task here already has, and a task can't move to a
+  // project that has a task of its name. What was typed or chosen goes back as it was.
+  const renamed = "title" in changes && titleKey(changes.title) !== titleKey(task.title);
+  const moved = "project_id" in changes && changes.project_id !== task.project_id && !task.parent_id;
+  const clash = (renamed || moved) && taskNamed(changes.title ?? task.title, { projectId: changes.project_id ?? task.project_id, parentId: task.parent_id, except: id });
+  if (clash) {
+    const there = state.projects.find((p) => p.id === changes.project_id)?.name;
+    const message = moved
+      ? `There's already a task called “${clash.title}” in ${there}. Rename one of them before moving this one.`
+      : nameTakenMessage(clash, task.parent_id);
+    const w = state.windows.get(id);
+    if (w) {
+      showWindowError(w, message);
+      w.body.querySelector('[data-field="title"]').value = task.title;
+      const project = w.body.querySelector('[data-field="project_id"]');
+      if (project) project.value = task.project_id;
+    } else {
+      showSyncNote(message);
+    }
+    refreshRow(id);
+    return;
+  }
   // A repeating task needs a deadline to repeat from.
   if (repeats({ repeat: changes.repeat ?? task.repeat }) && !("deadline" in changes ? changes.deadline : task.deadline)) {
     if ("repeat" in changes) {
@@ -1201,7 +1224,12 @@ async function updateTask(id, changes, focusField) {
   refreshRow(id, focusField);
   renderSummary();
   renderWindows();
-  await write(() => state.store.save(id, diff), "That change didn't save, so it has been undone. Check your connection and try again.");
+  const saved = await write(() => state.store.save(id, diff), null);
+  if (!saved.ok && saved.error) {
+    showSyncNote(saved.error.code === "duplicate_title"
+      ? "There's already a task with that name there, so the change has been undone."
+      : "That change didn't save, so it has been undone. Check your connection and try again.");
+  }
 }
 
 function fieldValue(control) {
@@ -1363,16 +1391,58 @@ function showSyncNote(message) {
   $("sync-note").hidden = !message;
 }
 
+// ---------- One name, one task ----------
+
+// A name as it's compared: without regard to capitals, or to spaces at the ends or doubled.
+const titleKey = (title) => String(title ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+const NAME_TAKEN = "There's already a task with that name here. Give this one a different name.";
+
+// The task that already has this name where a task would sit: in a project's list, with
+// the tasks mirrored into it, or for a subtask among what its task holds. Two tasks in one
+// project can't share a name, and the board refuses it too when it saves.
+function taskNamed(title, { projectId = null, parentId = null, except = null }) {
+  const key = titleKey(title);
+  if (!key) return null;
+  const beside = parentId ? [...subtasksOf(parentId), ...heldBy(parentId)] : tasksIn(projectId);
+  return beside.find((t) => t.id !== except && titleKey(t.title) === key) ?? null;
+}
+
+// Why a name can't be used, in words. When the task that has it is hidden by the filter,
+// it says so, since otherwise the name looks free.
+function nameTakenMessage(other, parentId = null) {
+  if (parentId) return `This task already has a subtask called “${other.title}”. Give this one a different name.`;
+  const hidden = state.filter.length > 0 && !matchesFilter(other, state.filter) && !state.keepShown.has(other.id);
+  return `There's already a task called “${other.title}” in this project.${hidden ? " It's hidden by the Assigned to filter." : ""} Give this one a different name.`;
+}
+
+// The message beside the box at the bottom of the list, in place of its hint.
+function showQuickError(message) {
+  $("quick-error").textContent = message || "";
+  $("quick-error").hidden = !message;
+  $("quick-hint-text").hidden = !!message;
+}
+$("quick-title").addEventListener("input", () => showQuickError(null));
+
 $("quick-add").addEventListener("submit", async (event) => {
   event.preventDefault();
   const title = $("quick-title").value.trim();
   if (!title) return $("quick-title").focus();
+  const clash = taskNamed(title, { projectId: state.projectId });
+  if (clash) {
+    showQuickError(nameTakenMessage(clash));
+    return $("quick-title").focus();
+  }
+  showQuickError(null);
   $("quick-submit").disabled = true;
-  const added = await write(() => state.store.save(null, { title, project_id: state.projectId }), "That task didn't save. Check your connection and try again.");
+  const added = await write(() => state.store.save(null, { title, project_id: state.projectId }), null);
   $("quick-submit").disabled = false;
   if (added.ok) {
     $("quick-title").value = "";
     keepInView(added.result.id);
+  } else if (added.error?.code === "duplicate_title") {
+    showQuickError(NAME_TAKEN);
+  } else if (added.error) {
+    showSyncNote("That task didn't save. Check your connection and try again.");
   }
   $("quick-title").focus();
 });
@@ -3032,6 +3102,12 @@ async function onWindowSubmit(w, event) {
   if (form.dataset.form === "subtask") {
     const title = input("title").value.trim();
     if (!title) return input("title").focus();
+    // Two subtasks of one task can't share a name.
+    const clash = taskNamed(title, { parentId: w.taskId });
+    if (clash) {
+      showWindowError(w, nameTakenMessage(clash, w.taskId));
+      return input("title").focus();
+    }
     const assignees = splitNames(input("assignee").value);
     action = () => state.store.save(null, { title, assignees, parent_id: w.taskId });
     failure = "That subtask didn't save. Check your connection and try again.";
@@ -3075,7 +3151,7 @@ async function onWindowSubmit(w, event) {
       image_too_large: "One of those images is too large. Images can be up to 10 MB.",
       too_many_images: "Six images is the most for one post.",
     }[result.error?.code];
-    showWindowError(w, imageProblem || failure);
+    showWindowError(w, imageProblem || (result.error?.code === "duplicate_title" ? "This task already has a subtask with that name. Give this one a different name." : failure));
   }
 }
 
@@ -3284,6 +3360,12 @@ async function submitNewTask(w, event) {
     w.body.querySelector('[data-field="title"]').focus();
     return;
   }
+  const clash = taskNamed(title, { projectId: state.projectId });
+  if (clash) {
+    showWindowError(w, nameTakenMessage(clash));
+    w.body.querySelector('[data-field="title"]').focus();
+    return;
+  }
   const fields = {
     title,
     project_id: state.projectId,
@@ -3297,7 +3379,7 @@ async function submitNewTask(w, event) {
   button.disabled = true;
   const saved = await write(() => state.store.save(null, fields), null);
   button.disabled = false;
-  if (!saved.ok) return showWindowError(w, "That task didn't save. Check your connection and try again.");
+  if (!saved.ok) return showWindowError(w, saved.error?.code === "duplicate_title" ? NAME_TAKEN : "That task didn't save. Check your connection and try again.");
 
   const { x, y, width } = w;
   closeWindow(w);

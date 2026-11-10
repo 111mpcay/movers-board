@@ -388,6 +388,8 @@ body::before {
    for missing tasks. A task kept in view though it's outside the filter is marked too. */
 .filter-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 0 12px; padding: 8px 12px; font-size: 0.9rem; font-weight: 500; overflow-wrap: anywhere; color: var(--warn-fg); background: var(--warn-bg); border-radius: 6px; }
 .filter-note .btn { color: var(--ink); background: var(--surface); }
+/* Why a task typed at the bottom of the list wasn't added, in place of the hint there */
+.quick-error { font-weight: 600; color: var(--danger); }
 .task-row.is-outside-filter > .task-cell { box-shadow: inset 5px 0 0 var(--orange), inset 0 -1px 0 var(--navy-line); }
 
 /* With more columns than the page is wide, the sheet scrolls sideways inside itself. How

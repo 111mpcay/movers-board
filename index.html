@@ -186,7 +186,10 @@
             <input id="quick-title" class="quick-input" type="text" maxlength="200" placeholder="Add a task" aria-label="Add a task" autocomplete="off">
             <button id="quick-submit" class="btn btn-primary btn-small" type="submit">Add</button>
           </div>
-          <div class="quick-hint" role="cell">Type a task and press Enter. Click a task to open it, or drag its dark cell to reorder.</div>
+          <div class="quick-hint" role="cell">
+            <span id="quick-hint-text">Type a task and press Enter. Click a task to open it, or drag its dark cell to reorder.</span>
+            <span id="quick-error" class="quick-error" role="alert" hidden></span>
+          </div>
         </form>
       </div>
     </main>
