@@ -991,6 +991,15 @@ body::before {
   background: hsl(var(--person-hue) var(--person-sat) calc(var(--person-light) + var(--person-tier) * var(--person-step)));
   border-radius: 13px;
 }
+/* The main assignee comes first, with a star. Someone supporting is a name to click, which
+   makes them the main. */
+.name-tag.is-main { font-weight: 700; }
+.name-tag-star { margin-right: 2px; font-size: 0.82em; }
+.name-tag-role { margin-left: 5px; padding: 0 6px; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; background: rgb(255 255 255 / 0.55); border-radius: 8px; }
+.name-tag-name { padding: 0; font: inherit; color: inherit; text-align: left; overflow-wrap: anywhere; background: none; border: 0; cursor: pointer; }
+.name-tag-name:hover { text-decoration: underline; }
+.name-roles-hint { margin-top: 5px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .name-tag-x { flex: none; width: 24px; height: 24px; line-height: 1; color: inherit; background: none; border: 0; border-radius: 50%; cursor: pointer; }
 .name-tag-x:hover { background: rgb(128 128 128 / 0.3); }
 /* On a row the box is a small + beside the names, and opens up when it's time to type. */

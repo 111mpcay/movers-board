@@ -855,11 +855,13 @@ function rowPicker(task) {
     placeholder: "+",
     title: "Assign someone",
     boxClass: "cell-input assign-input",
-    onChange(names) {
-      // Saving redraws the row, which would otherwise lose the cursor.
+    roles: "compact",
+    onChange(names, cause) {
+      // Saving redraws the row, which would otherwise lose the cursor. After a new main the
+      // cursor stays on the names, rather than opening the box for typing one.
       const keepCursor = picker.root.contains(document.activeElement);
       updateTask(task.id, { assignees: names });
-      if (keepCursor) $("task-rows").querySelector(`[data-id="${CSS.escape(task.id)}"] .name-box`)?.focus();
+      if (keepCursor) $("task-rows").querySelector(`[data-id="${CSS.escape(task.id)}"] ${cause === "main" ? "[data-make-main]" : ".name-box"}`)?.focus();
     },
   });
   return picker.root;
@@ -1635,14 +1637,44 @@ const personColor = (name) => state.personColors.get(personKey(name)) ?? hashNam
 // Every other color is deeper, so neighbours on the wheel still look different.
 const personColorStyle = (slot) => `--person-hue: ${PERSON_HUES[slot]}; --person-tier: ${slot % 2}`;
 
+// The people on a task: the first is its main assignee, and the others support them.
+const mainAssignee = (task) => task?.assignees?.[0] ?? null;
+// "Alex (main), Sam, Jo", or just the name of someone on it alone.
+const assigneeText = (task) => (task.assignees.length > 1
+  ? `${task.assignees[0]} (main), ${task.assignees.slice(1).join(", ")}`
+  : task.assignees.join(", "));
+// What one person is on a task that several people are on, for a list of their work.
+function roleOn(task, key) {
+  if (!key || task.assignees.length < 2 || !task.assignees.some((name) => personKey(name) === key)) return null;
+  return personKey(mainAssignee(task)) === key ? "Main" : `Supporting ${mainAssignee(task)}`;
+}
+
 // Names as removable tags, with a box to add more. Enter, a comma, clicking away or picking
 // a suggestion adds what's typed, and names separated by commas add together.
-function namePicker({ label, names = [], placeholder = "Add a name", title = null, boxClass = "input", skip = null, onChange = null }) {
+// With roles, the first name is the main assignee and clicking another name puts that person
+// first. "full" says so in words, for a task's own window. "compact" is a star, and only
+// once there's someone to tell the main apart from, for a row of the task list.
+function namePicker({ label, names = [], placeholder = "Add a name", title = null, boxClass = "input", skip = null, onChange = null, roles = null }) {
   let current = [...names];
   const tags = el("ul", { class: "name-tags" });
   const box = textInput({ class: `${boxClass} name-box`, maxlength: "200", list: "people-list", placeholder, title, "aria-label": label });
-  const render = () => tags.replaceChildren(...current.map((name) => el("li", { class: "name-tag", style: personColorStyle(personColor(name)), "data-person": name }, name,
-    el("button", { class: "name-tag-x", type: "button", "aria-label": `Remove ${name}`, "data-name": name }, "×"))));
+  const hint = roles === "full" && el("p", { class: "hint name-roles-hint", "data-roles-hint": true, hidden: true },
+    "★ is the main assignee, and the others support them. Click a name to make that person the main.");
+  const render = () => {
+    tags.replaceChildren(...current.map((name, i) => {
+      const main = !!roles && i === 0 && (roles === "full" || current.length > 1);
+      return el("li", { class: `name-tag${main ? " is-main" : ""}`, style: personColorStyle(personColor(name)), "data-person": name },
+        main && el("span", { class: "name-tag-star", "aria-hidden": "true", title: "Main assignee" }, "★"),
+        roles && i > 0
+          ? el("button", { class: "name-tag-name", type: "button", "data-make-main": name, title: `Make ${name} the main assignee`, "aria-label": `${name}, supporting. Make ${name} the main assignee` }, name)
+          : name,
+        main && (roles === "full"
+          ? el("span", { class: "name-tag-role" }, "Main")
+          : el("span", { class: "visually-hidden" }, " (main assignee)")),
+        el("button", { class: "name-tag-x", type: "button", "aria-label": `Remove ${name}`, "data-name": name }, "×"));
+    }));
+    if (hint) hint.hidden = current.length < 2;
+  };
   const add = (text) => {
     const before = current.length;
     for (const name of splitNames(text)) {
@@ -1671,6 +1703,15 @@ function namePicker({ label, names = [], placeholder = "Add a name", title = nul
     if (!event.inputType || event.inputType === "insertReplacementText" || box.value.includes(",")) take();
   });
   tags.addEventListener("click", (event) => {
+    // Clicking someone supporting puts them first, which makes them the main assignee.
+    const promote = event.target.closest("[data-make-main]");
+    if (promote) {
+      const name = promote.dataset.makeMain;
+      current = [name, ...current.filter((other) => other !== name)];
+      render();
+      tags.querySelector("[data-make-main]")?.focus();
+      return onChange?.([...current], "main");
+    }
     const remove = event.target.closest("[data-name]");
     if (!remove) return;
     current = current.filter((name) => name !== remove.dataset.name);
@@ -1680,7 +1721,7 @@ function namePicker({ label, names = [], placeholder = "Add a name", title = nul
   });
   render();
   return {
-    root: el("div", { class: "name-picker" }, tags, box),
+    root: el("div", { class: "name-picker" }, tags, box, hint),
     add,
     names() {
       take();
@@ -2332,7 +2373,7 @@ function showSection(taskId, name) {
 
 function buildTaskWindow(w, task) {
   const isSubtask = !!task.parent_id;
-  w.assignPicker = namePicker({ label: "Assign to", names: task.assignees, onChange: (names) => updateTask(w.taskId, { assignees: names }) });
+  w.assignPicker = namePicker({ label: "Assign to", names: task.assignees, roles: "full", onChange: (names) => updateTask(w.taskId, { assignees: names }) });
   const [nameField, detailsField, ...whoAndWhen] = taskFields(w.assignPicker);
   const count = (name) => el("span", { class: "win-count", "data-count": name });
   const parts = [
@@ -2474,7 +2515,7 @@ function renderTaskWindow(w) {
   w.mirrorPicker?.render();
   // The gist of the folded section, for its heading: who, when, how urgent, how far along.
   const gist = [
-    task.assignees.length ? task.assignees.join(", ") : "Unassigned",
+    task.assignees.length ? assigneeText(task) : "Unassigned",
     deadlineNote(task)?.text || (task.deadline ? formatDay(parseDate(task.deadline)) : null),
     URGENCY[task.urgency],
     STATUS[task.status],
@@ -2538,7 +2579,7 @@ function renderTaskWindow(w) {
           el("button", { class: `link-btn${s.status === "done" ? " subtask-done" : ""}`, type: "button", "data-open-task": s.id }, s.title)),
         held.has(s.id) && el("span", { class: "mirror-from" }, `Mirrored from ${from(s)}`),
         s.assignees.length
-          ? el("span", { class: "win-meta" }, s.assignees.join(", "))
+          ? el("span", { class: "win-meta" }, assigneeText(s))
           : el("button", { class: "link-btn win-meta", type: "button", "data-assign": s.id, "aria-label": `Assign ${s.title}` }, "Unassigned"),
         due && el("span", { class: `due-note due-${due.tone}` }, due.text),
         // A reminder to yourself about this subtask. Not on a task that's only mirrored in.
@@ -2875,7 +2916,7 @@ function openNewTask() {
   const w = createWindow("new", "Add task");
   w.height = Math.min(w.height, 470);
   placeWindow(w);
-  w.assignPicker = namePicker({ label: "Assign to" });
+  w.assignPicker = namePicker({ label: "Assign to", roles: "full" });
   const form = el("form", { class: "win-body", novalidate: true },
     ...taskFields(w.assignPicker),
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
@@ -3935,7 +3976,8 @@ function renderPeoplePage() {
     overdue: c.overdue,
     done: c.done,
     width: Math.round((c.tasks.length / most) * 100),
-    tasks: c.tasks.map((t) => ({ id: t.id, title: t.title, urgency: t.urgency, about: [taskPlace(t), STATUS[t.status], `${t.progress}%`].filter(Boolean).join(" · "), due: deadlineNote(t) })),
+    // On a task several people are on, whether this person is the main or supporting, and whom.
+    tasks: c.tasks.map((t) => ({ id: t.id, title: t.title, urgency: t.urgency, about: [roleOn(t, c.key), taskPlace(t), STATUS[t.status], `${t.progress}%`].filter(Boolean).join(" · "), due: deadlineNote(t) })),
   }));
 
   // Only rebuilds when something shows differently, so an open card and keyboard focus survive a refresh.
@@ -4027,7 +4069,11 @@ function notificationLines(n) {
     const task = findTask(n.task_id);
     return [`Reminder: your ${task && repeats(task) ? task.repeat : "repeating"} task is open again`, [n.title, `due ${formatDay(parseDate(n.due_on))}`, n.project_name]];
   }
-  if (n.action !== "deleted") return [`${n.by_name} assigned you a ${n.kind}`, where];
+  if (n.action !== "deleted") {
+    // On a task several people are on, what this person is on it now: the main, or support.
+    const role = roleOn(findTask(n.task_id) || { assignees: [] }, personKey(state.name));
+    return [`${n.by_name} assigned you a ${n.kind}${role === "Main" ? " as the main assignee" : role ? ` to support ${role.slice("Supporting ".length)}` : ""}`, where];
+  }
   if (!n.inside_count) return [`${n.by_name} deleted your ${n.kind}`, where];
   const yours = n.inside_count === 1 ? "1 item" : `${n.inside_count} items`;
   return [`${n.by_name} deleted a ${n.kind}`, [...where, `included ${yours} you created`]];
