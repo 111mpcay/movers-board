@@ -371,6 +371,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     setReminder: (taskId, remindAt, note) => rpc("movers_set_reminder", { p_token: token, p_task_id: taskId, p_remind_at: remindAt, p_note: note }),
     clearReminder: (taskId) => rpc("movers_clear_reminder", { p_token: token, p_task_id: taskId }),
     likeUpdate: (taskId, at, on) => rpc("movers_like_update", { p_token: token, p_task_id: taskId, p_at: at, p_on: on }),
+    likeComment: (id, on) => rpc("movers_like_comment", { p_token: token, p_id: id, p_on: on }),
     setFocus: (taskId, on) => rpc("movers_set_focus", { p_token: token, p_task_id: taskId, p_on: on }),
     taskHistory: (taskId) => rpc("movers_task_history", { p_token: token, p_task_id: taskId }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
@@ -2282,7 +2283,7 @@ function icon(paths, size = 16) {
 }
 const CALENDAR_ICON = ["M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M4 10h16", "M8 3v4", "M16 3v4"];
 
-// ---------- Acknowledging an update ----------
+// ---------- Acknowledging an update or a comment ----------
 // The page calls it acknowledging. Underneath, here and on the board, it's kept as a like.
 
 const LIKE_ICON = ["M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3z", "M7 11l4-8a2 2 0 0 1 2 2v4h5.5a2 2 0 0 1 2 2.3l-1.2 7a2 2 0 0 1-2 1.7H7"];
@@ -2303,11 +2304,11 @@ function nameList(names) {
   return said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said.at(-1)}` : said[0] || "";
 }
 
-// Under an update: an Acknowledge button on someone else's, with who has acknowledged it so
-// far. Your own has no button, only who has.
-function likeRow(task, entry) {
-  const names = likesOf(task, entry);
-  if (personKey(entry.by) === personKey(state.name)) {
+// Under an update or a comment: an Acknowledge button on someone else's, with who has
+// acknowledged it so far. Your own has no button, only who has. `what` is "update" or
+// "comment", and `data` is the attribute the button is known by.
+function ackRow(names, author, what, data) {
+  if (personKey(author) === personKey(state.name)) {
     return names.length ? el("span", { class: "like-row" }, el("span", { class: "like-note", "data-liked-by": true }, `Acknowledged by ${nameList(names)}`)) : null;
   }
   const mine = names.some((n) => personKey(n) === personKey(state.name));
@@ -2315,12 +2316,15 @@ function likeRow(task, entry) {
     el("button", {
       class: `like-btn${mine ? " is-liked" : ""}`,
       type: "button",
-      "data-like": entry.at,
+      ...data,
       "aria-pressed": String(mine),
-      "aria-label": mine ? `You acknowledged ${entry.by}'s update. Press to take it back` : `Acknowledge ${entry.by}'s update`,
+      "aria-label": mine ? `You acknowledged ${author}'s ${what}. Press to take it back` : `Acknowledge ${author}'s ${what}`,
     }, icon(LIKE_ICON, 15), mine ? "Acknowledged" : "Acknowledge", names.length > 0 && el("span", { class: "like-count" }, String(names.length))),
     names.length > 0 && el("span", { class: "like-note", "data-liked-by": true }, capitalize(nameList(names))));
 }
+const likeRow = (task, entry) => ackRow(likesOf(task, entry), entry.by, "update", { "data-like": entry.at });
+// A comment carries the names of the people who have acknowledged it, in the order they did.
+const commentLikeRow = (comment) => ackRow(comment.likes || [], comment.created_by, "comment", { "data-like-comment": comment.id });
 
 // Likes an update, or takes the like back. It shows at once, and the board's answer follows:
 // if it didn't save, the next read puts it back as it was.
@@ -2335,6 +2339,21 @@ async function likeUpdate(w, button) {
   // The list was redrawn, so the keyboard goes back to the button it was on.
   [...w.body.querySelectorAll("[data-like]")].find((b) => b.dataset.like === at)?.focus();
   const result = await write(() => state.store.likeUpdate(w.taskId, at, on), null);
+  if (w.root.isConnected) showWindowError(w, result.ok ? null : "That didn't save. Check your connection and try again.");
+}
+
+// The same for a comment: acknowledges it, or takes that back.
+async function likeComment(w, button) {
+  const id = button.dataset.likeComment;
+  const on = button.getAttribute("aria-pressed") !== "true";
+  const comment = (findTask(w.taskId)?.comments || []).find((c) => c.id === id);
+  if (!comment) return;
+  const me = personKey(state.name);
+  comment.likes = [...(comment.likes || []).filter((n) => personKey(n) !== me), ...(on ? [state.name] : [])];
+  renderTaskWindow(w);
+  // The list was redrawn, so the keyboard goes back to the button it was on.
+  w.body.querySelector(`[data-like-comment="${CSS.escape(id)}"]`)?.focus();
+  const result = await write(() => state.store.likeComment(id, on), null);
   if (w.root.isConnected) showWindowError(w, result.ok ? null : "That didn't save. Check your connection and try again.");
 }
 
@@ -3153,7 +3172,7 @@ function renderTaskWindow(w) {
   const comments = [...(task.comments || [])].reverse();
   setCount(w, "comments", comments.length ? String(comments.length) : "");
   const editingComment = (c) => w.editing?.list === "comments" && w.editing.key === c.id;
-  renderList(w, "comments", w.editing?.list === "comments" ? ["editing", w.editing.key] : comments.map((c) => [c.id, c.body, c.mentions, c.created_by, c.edited_at, timeAgo(c.created_at), state.name, imagesOnComment(task, c).map((a) => a.id)]), () =>
+  renderList(w, "comments", w.editing?.list === "comments" ? ["editing", w.editing.key] : comments.map((c) => [c.id, c.body, c.mentions, c.created_by, c.edited_at, timeAgo(c.created_at), state.name, imagesOnComment(task, c).map((a) => a.id), c.likes || []]), () =>
     comments.length ? comments.map((c) => (editingComment(c)
       ? el("li", { class: "is-editing", "data-comment": c.id }, ownEditForm("comment", c.id, c.body))
       : el("li", { "data-comment": c.id },
@@ -3162,7 +3181,9 @@ function renderTaskWindow(w) {
         editedMark(c.edited_at),
         mine(c.created_by) && ownActions("comment", c.id),
         el("span", { class: "activity-note" }, ...commentBody(c)),
-        postImages(imagesOnComment(task, c))))) : [el("li", { class: "win-empty" }, "No comments yet.")]);
+        postImages(imagesOnComment(task, c)),
+        // A way to say it's been seen, and who has, as on an update.
+        commentLikeRow(c)))) : [el("li", { class: "win-empty" }, "No comments yet.")]);
 
   // What's attached to the task itself. An image pasted into an update or a comment is kept
   // the same way, but belongs to that update or comment and shows there.
@@ -3323,6 +3344,8 @@ function onWindowClick(w, event) {
   if (deleteSub) return deleteSubtask(w, deleteSub);
   const like = target.closest("[data-like]");
   if (like) return likeUpdate(w, like);
+  const likeC = target.closest("[data-like-comment]");
+  if (likeC) return likeComment(w, likeC);
   const image = target.closest("[data-image]");
   if (image) return openFile(w, image.dataset.image, image.dataset.mime);
   const editOwn = target.closest("[data-edit-own]");
@@ -5422,6 +5445,7 @@ function notificationLines(n) {
   if (n.action === "reminder") return ["Reminder you set", where, n.detail ? `“${n.detail}”` : null];
   // Someone has seen an update this person posted, and said so.
   if (n.action === "liked") return [`${n.by_name} acknowledged your update`, where, `“${String(n.detail || "")}”`];
+  if (n.action === "liked_comment") return [`${n.by_name} acknowledged your comment`, where, `“${String(n.detail || "")}”`];
   if (n.action === "mentioned" || n.action === "mentioned_update") {
     return [`${n.by_name} mentioned you in ${n.action === "mentioned" ? "a comment" : "an update"}`, where, `“${String(n.detail || "")}”`];
   }
@@ -5533,7 +5557,7 @@ function renderNotifications() {
           change && el("span", { class: "notify-task notify-change" }, change),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, updates of yours that were acknowledged, reminders you set, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, updates and comments of yours that were acknowledged, reminders you set, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {
@@ -5575,8 +5599,8 @@ $("notify-read-all").addEventListener("click", () => markNotificationsRead(null)
 $("notify-list").addEventListener("click", (event) => {
   const item = event.target.closest("[data-notification]");
   if (!item) return;
-  // A mention opens the task at the section it was made in, and a like at the updates.
-  const mentionedIn = { mentioned: "comments", mentioned_update: "updates", liked: "updates" }[state.notifications.find((n) => n.id === item.dataset.notification)?.action];
+  // A mention or an acknowledgment opens the task at the section it was made in.
+  const mentionedIn = { mentioned: "comments", mentioned_update: "updates", liked: "updates", liked_comment: "comments" }[state.notifications.find((n) => n.id === item.dataset.notification)?.action];
   markNotificationsRead([item.dataset.notification]);
   // On a phone the list is its own page, so leave it up when there's nothing to go to.
   if (!isPhone() || findTask(item.dataset.task) || findMeeting(item.dataset.openMeeting)) closeNotifications();
