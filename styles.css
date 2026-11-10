@@ -1317,6 +1317,13 @@ body::before {
 .activity-time { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
 .activity-system { color: var(--muted); }
 .activity-note { display: block; margin-top: 1px; white-space: pre-wrap; }
+/* On what you posted yourself: Edit and Delete at the end of its first line. Once it's been
+   edited, anyone sees that beside the time. While it's edited, the box takes its place. */
+.own-actions { float: right; display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; }
+.own-actions .link-btn { font-size: 0.8rem; }
+.activity-edited { margin-left: 6px; color: var(--muted); font-size: 0.8rem; }
+.activity-edited::before { content: "· "; }
+.activity-list .is-editing .win-form { margin-top: 0; }
 
 /* Under an update: an Acknowledge button, and who has acknowledged it. Lit once this person has. */
 .like-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; }

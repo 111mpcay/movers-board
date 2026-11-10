@@ -340,6 +340,10 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     mirrorTask: (id, targets) => rpc("movers_mirror_task", { p_token: token, p_id: id, p_targets: targets }),
     addUpdate: (id, text, mentions) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text, p_mentions: mentions || [] }),
     addComment: (taskId, body, mentions) => rpc("movers_add_task_comment", { p_token: token, p_task_id: taskId, p_body: body, p_mentions: mentions }),
+    editUpdate: (taskId, at, text, mentions) => rpc("movers_edit_task_update", { p_token: token, p_task_id: taskId, p_at: at, p_text: text, p_mentions: mentions || [] }),
+    deleteUpdate: (taskId, at) => rpc("movers_delete_task_update", { p_token: token, p_task_id: taskId, p_at: at }),
+    editComment: (id, body, mentions) => rpc("movers_edit_task_comment", { p_token: token, p_id: id, p_body: body, p_mentions: mentions || [] }),
+    deleteComment: (id) => rpc("movers_delete_task_comment", { p_token: token, p_id: id }),
     setReminder: (taskId, remindAt, note) => rpc("movers_set_reminder", { p_token: token, p_task_id: taskId, p_remind_at: remindAt, p_note: note }),
     clearReminder: (taskId) => rpc("movers_clear_reminder", { p_token: token, p_task_id: taskId }),
     likeUpdate: (taskId, at, on) => rpc("movers_like_update", { p_token: token, p_task_id: taskId, p_at: at, p_on: on }),
@@ -2267,9 +2271,12 @@ function commentBody(comment) {
 
 // The box a comment or an update is written in. Typing @ lists the people on the board,
 // narrowed by what follows it: Enter, Tab or a click puts the name in, and Escape puts the
-// list away.
-function mentionForm({ name, placeholder, label, button, maxlength }) {
+// list away. With `cancel` it's for editing what's already posted: it starts with those
+// words in it and has a Cancel button, which Escape presses when no list is open.
+function mentionForm({ name, placeholder, label, button, maxlength, value = "", cancel = false }) {
   const input = textInput({ maxlength, placeholder, "aria-label": label, autocomplete: "off", "data-input": "text" });
+  input.value = value;
+  const cancelButton = cancel ? el("button", { class: "btn btn-quiet", type: "button", "data-cancel-edit": true }, "Cancel") : null;
   const list = el("ul", { class: "mention-options", "data-mention-options": true, hidden: true });
   let found = [];
   let active = 0;
@@ -2318,7 +2325,14 @@ function mentionForm({ name, placeholder, label, button, maxlength }) {
   input.addEventListener("click", look);
   input.addEventListener("blur", close);
   input.addEventListener("keydown", (event) => {
-    if (!found.length) return;
+    if (!found.length) {
+      if (cancelButton && event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation(); // Esc here gives up the edit, not the whole window
+        cancelButton.click();
+      }
+      return;
+    }
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       active = (active + (event.key === "ArrowDown" ? 1 : found.length - 1)) % found.length;
@@ -2343,7 +2357,106 @@ function mentionForm({ name, placeholder, label, button, maxlength }) {
   return el("form", { class: "win-form mention-form", "data-form": name, novalidate: true },
     input,
     el("button", { class: "btn btn-primary", type: "submit" }, button),
+    cancelButton,
     list);
+}
+
+// ---------- Editing or deleting your own update or comment ----------
+
+// Beside the time, once what was posted has been edited. Hovering says when.
+function editedMark(editedAt) {
+  if (!editedAt) return null;
+  const when = new Date(editedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return el("span", { class: "activity-edited", "data-edited": true, title: `Edited ${when}` }, "edited");
+}
+
+// Edit and Delete, on what this person posted themselves. `key` says which one: an
+// update's moment, or a comment's id.
+function ownActions(kind, key) {
+  return el("span", { class: "own-actions" },
+    el("button", { class: "link-btn", type: "button", "data-edit-own": kind, "data-key": key }, "Edit"),
+    el("button", { class: "win-remove", type: "button", "data-delete-own": kind, "data-key": key }, "Delete"));
+}
+
+// The box an update or a comment is edited in, with its words in it.
+function ownEditForm(kind, key, text) {
+  const form = mentionForm({ name: `edit-${kind}`, placeholder: "", label: `Edit your ${kind}`, button: "Save", maxlength: kind === "update" ? "1000" : "2000", value: text, cancel: true });
+  form.dataset.key = key;
+  return form;
+}
+
+// One update or comment is edited at a time. While it is, its list is left alone, so the
+// box and what's typed in it survive the board refreshing.
+function startOwnEdit(w, kind, key) {
+  w.editing = { list: kind === "update" ? "updates" : "comments", key };
+  showWindowError(w, null);
+  renderTaskWindow(w);
+  const box = w.body.querySelector(`[data-form="edit-${kind}"] [data-input="text"]`);
+  if (!box) return;
+  box.focus();
+  box.setSelectionRange(box.value.length, box.value.length);
+}
+
+function stopOwnEdit(w) {
+  const was = w.editing;
+  w.editing = null;
+  showWindowError(w, null);
+  renderTaskWindow(w);
+  // The keyboard goes back to the Edit button it came from.
+  if (was) [...w.body.querySelectorAll("[data-edit-own]")].find((b) => b.dataset.key === was.key)?.focus();
+}
+
+// Why the board wouldn't change or delete an update or a comment, in words.
+function ownPostError(error, kind, done) {
+  if (error?.code === "not_author") return `Only whoever posted that ${kind} can change it.`;
+  if (error?.code === "update_not_found" || error?.code === "comment_not_found") return `That ${kind} is no longer there.`;
+  return `That ${kind} wasn't ${done}. Check your connection and try again.`;
+}
+
+async function saveOwnEdit(w, form) {
+  const kind = form.dataset.form === "edit-update" ? "update" : "comment";
+  const key = form.dataset.key;
+  const box = form.querySelector('[data-input="text"]');
+  const text = box.value.trim();
+  if (!text) return box.focus();
+  const task = findTask(w.taskId);
+  const posted = kind === "update"
+    ? (task?.updates || []).find((u) => u.kind === "note" && stampKey(u.at) === stampKey(key))
+    : (task?.comments || []).find((c) => c.id === key);
+  // The same words: there's nothing to save.
+  if (posted && (kind === "update" ? posted.text : posted.body) === text) return stopOwnEdit(w);
+  const mentions = mentionsIn(text);
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  const result = await write(() => (kind === "update" ? state.store.editUpdate(w.taskId, key, text, mentions) : state.store.editComment(key, text, mentions)), null);
+  button.disabled = false;
+  if (!w.root.isConnected) return;
+  if (!result.ok) return showWindowError(w, ownPostError(result.error, kind, "saved"));
+  // Shown at once, rather than when the next read arrives.
+  if (posted) Object.assign(posted, { [kind === "update" ? "text" : "body"]: text, mentions, edited_at: new Date().toISOString() });
+  stopOwnEdit(w);
+}
+
+// Deleting takes a second press, as removing a file does.
+async function deleteOwnPost(w, button) {
+  const kind = button.dataset.deleteOwn;
+  const key = button.dataset.key;
+  if (!armButton(button, "Confirm?", "Delete")) return;
+  button.disabled = true;
+  const result = await write(() => (kind === "update" ? state.store.deleteUpdate(w.taskId, key) : state.store.deleteComment(key)), null);
+  button.disabled = false;
+  if (!w.root.isConnected) return;
+  if (!result.ok) return showWindowError(w, ownPostError(result.error, kind, "deleted"));
+  // Gone at once, rather than when the next read arrives.
+  const task = findTask(w.taskId);
+  if (task && kind === "update") {
+    task.updates = (task.updates || []).filter((u) => !(u.kind === "note" && stampKey(u.at) === stampKey(key)));
+    task.likes = (task.likes || []).filter((l) => stampKey(l.at) !== stampKey(key));
+  } else if (task) {
+    task.comments = (task.comments || []).filter((c) => c.id !== key);
+  }
+  showWindowError(w, null);
+  renderTaskWindow(w);
 }
 
 // Fetches a task's whole history for its window, newest first. It's kept with the count it
@@ -2606,28 +2719,39 @@ function renderTaskWindow(w) {
   // everything the board has kept for this task: those notes and every change, newest first.
   const entries = [...(task.updates || [])].reverse();
   const notes = entries.filter((entry) => entry.kind === "note");
-  const entrySignature = (entry) => [entry.at, entry.by, entry.kind, entry.text, entry.mentions, timeAgo(entry.at), state.name];
+  const entrySignature = (entry) => [entry.at, entry.by, entry.kind, entry.text, entry.mentions, entry.edited_at, timeAgo(entry.at), state.name];
   // How long ago, with the exact day and time on hover.
   const when = (entry) => el("span", { class: "activity-time", title: new Date(entry.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }, timeAgo(entry.at));
-  renderList(w, "updates", notes.map((entry) => [...entrySignature(entry), likesOf(task, entry)]), () =>
-    notes.length ? notes.map((entry) => el("li", {},
-      el("strong", {}, entry.by), " ",
-      el("span", { class: "activity-time" }, timeAgo(entry.at)),
-      // The people an update mentions stand out, as they do in a comment.
-      el("span", { class: "activity-note" }, ...commentBody({ body: entry.text, mentions: entry.mentions })),
-      // A way to say it's been seen, and who has.
-      likeRow(task, entry))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
+  // Whoever posted an update or wrote a comment can edit it or delete it. While one is
+  // being edited its list is left as it is, so the box isn't lost when the board refreshes.
+  const mine = (name) => personKey(name) === personKey(state.name);
+  const editingUpdate = (entry) => w.editing?.list === "updates" && stampKey(w.editing.key) === stampKey(entry.at);
+  renderList(w, "updates", w.editing?.list === "updates" ? ["editing", w.editing.key] : notes.map((entry) => [...entrySignature(entry), likesOf(task, entry)]), () =>
+    notes.length ? notes.map((entry) => (editingUpdate(entry)
+      ? el("li", { class: "is-editing", "data-update": entry.at }, ownEditForm("update", entry.at, entry.text))
+      : el("li", { "data-update": entry.at },
+        el("strong", {}, entry.by), " ",
+        el("span", { class: "activity-time" }, timeAgo(entry.at)),
+        editedMark(entry.edited_at),
+        mine(entry.by) && ownActions("update", entry.at),
+        // The people an update mentions stand out, as they do in a comment.
+        el("span", { class: "activity-note" }, ...commentBody({ body: entry.text, mentions: entry.mentions })),
+        // A way to say it's been seen, and who has.
+        likeRow(task, entry)))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
   // A task carries its latest fifty entries, and the board keeps every one. When there are
   // more, the rest are fetched once the section is open, and again when the count moves on.
   const total = task.history_count ?? entries.length;
   const whole = w.history?.asked === total ? w.history.entries : null;
   if (!whole && total > entries.length && !w.historyFailed && w.body.querySelector('[data-fold="history"]').open) loadHistory(w, total);
-  const listed = whole || entries;
+  // The latest entries are the ones the task carries, which follow an edit or a delete at
+  // once. What's older than those comes from the whole history that was fetched.
+  const oldest = entries.at(-1);
+  const listed = whole && oldest ? [...entries, ...whole.filter((entry) => stampKey(entry.at) < stampKey(oldest.at))] : whole || entries;
   const earlier = Math.max(0, total - listed.length);
   setCount(w, "history", total ? String(total) : "");
   renderList(w, "history", [listed.map(entrySignature), earlier, !!w.historyFailed], () => (listed.length ? [
     ...listed.map((entry) => (entry.kind === "note"
-      ? el("li", { class: "activity-posted" }, `${entry.by} posted an update `, when(entry), el("span", { class: "activity-note" }, `“${entry.text}”`))
+      ? el("li", { class: "activity-posted" }, `${entry.by} posted an update `, when(entry), editedMark(entry.edited_at), el("span", { class: "activity-note" }, `“${entry.text}”`))
       : el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, when(entry)))),
     earlier > 0 && el("li", { class: "win-empty", "data-history-more": true }, w.historyFailed
       ? `The ${earlier} earlier ${earlier === 1 ? "entry" : "entries"} couldn't be loaded. Check your connection, then fold this section and open it again.`
@@ -2637,11 +2761,16 @@ function renderTaskWindow(w) {
   // Comments, the newest first, with the people each one mentions standing out.
   const comments = [...(task.comments || [])].reverse();
   setCount(w, "comments", comments.length ? String(comments.length) : "");
-  renderList(w, "comments", comments.map((c) => [c.id, c.body, c.mentions, c.created_by, timeAgo(c.created_at), state.name]), () =>
-    comments.length ? comments.map((c) => el("li", { "data-comment": c.id },
-      el("strong", {}, c.created_by), " ",
-      el("span", { class: "activity-time" }, timeAgo(c.created_at)),
-      el("span", { class: "activity-note" }, ...commentBody(c)))) : [el("li", { class: "win-empty" }, "No comments yet.")]);
+  const editingComment = (c) => w.editing?.list === "comments" && w.editing.key === c.id;
+  renderList(w, "comments", w.editing?.list === "comments" ? ["editing", w.editing.key] : comments.map((c) => [c.id, c.body, c.mentions, c.created_by, c.edited_at, timeAgo(c.created_at), state.name]), () =>
+    comments.length ? comments.map((c) => (editingComment(c)
+      ? el("li", { class: "is-editing", "data-comment": c.id }, ownEditForm("comment", c.id, c.body))
+      : el("li", { "data-comment": c.id },
+        el("strong", {}, c.created_by), " ",
+        el("span", { class: "activity-time" }, timeAgo(c.created_at)),
+        editedMark(c.edited_at),
+        mine(c.created_by) && ownActions("comment", c.id),
+        el("span", { class: "activity-note" }, ...commentBody(c))))) : [el("li", { class: "win-empty" }, "No comments yet.")]);
 
   const attachments = task.attachments || [];
   // Meetings, files and links are declared on the task. A subtask shows those sections
@@ -2749,6 +2878,8 @@ async function onWindowSubmit(w, event) {
     action = () => state.store.addComment(w.taskId, text, mentionsIn(text));
     failure = "That comment didn't post. Check your connection and try again.";
     focusAfter = input("text");
+  } else if (form.dataset.form === "edit-update" || form.dataset.form === "edit-comment") {
+    return saveOwnEdit(w, form);
   } else if (form.dataset.form === "link") {
     let url = input("url").value.trim();
     if (!url) return input("url").focus();
@@ -2780,6 +2911,11 @@ function onWindowClick(w, event) {
   if (remind) return openReminder(remind.dataset.remind);
   const like = target.closest("[data-like]");
   if (like) return likeUpdate(w, like);
+  const editOwn = target.closest("[data-edit-own]");
+  if (editOwn) return startOwnEdit(w, editOwn.dataset.editOwn, editOwn.dataset.key);
+  if (target.closest("[data-cancel-edit]")) return stopOwnEdit(w);
+  const deleteOwn = target.closest("[data-delete-own]");
+  if (deleteOwn) return deleteOwnPost(w, deleteOwn);
   const opener = target.closest("[data-open-task]");
   if (opener) return openTask(opener.dataset.openTask);
   const meeting = target.closest("[data-open-meeting]");
@@ -4200,9 +4336,13 @@ function notificationLines(n) {
   }
   if (n.kind === "meeting") {
     const when = meetingWhen(n.repeat, n.starts_at);
-    // A move says when the meeting is now, and a reschedule the reason given, if any.
-    const moved = n.action === "changed" || n.action === "rescheduled";
-    return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, moved ? `now ${when}` : when], n.action === "rescheduled" && n.detail ? `“${n.detail}”` : null];
+    const headline = `${n.by_name} ${MEETING_NOTICE[n.action]}`;
+    // A reschedule says when the meeting is now, and the reason given, if any.
+    if (n.action === "rescheduled") return [headline, [n.title, `now ${when}`], n.detail ? `“${n.detail}”` : null];
+    // An edit says what changed. A notice from before edits said that was only ever sent
+    // for a new time, place or repeat, and reads as it did.
+    if (n.action === "changed") return [headline, [n.title, n.detail ? when : `now ${when}`], n.detail ? capitalize(n.detail) : null];
+    return [headline, [n.title, when]];
   }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
   // One this person set for themselves, with the note they wrote.
