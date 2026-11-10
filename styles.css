@@ -789,6 +789,33 @@ body::before {
 .subtask-list .win-item input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--orange); cursor: pointer; }
 .subtask-list .win-item .dot { flex: none; width: 8px; height: 8px; box-shadow: none; }
 .my-subtasks .mine-done .subtask-group { margin-top: 8px; }
+
+/* People, the My Tasks tab: this person's tasks, with a star on each to make it one of the
+   three they're focusing on. The focus ones sit in a box of their own at the top. */
+.my-tasks { max-width: 760px; }
+.focus-box { margin-bottom: 18px; padding: 10px 12px 12px; background: var(--surface); border: 1px solid var(--line); border-left: 5px solid var(--orange); border-radius: 8px; }
+.focus-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; font: 700 1.1rem/1.2 var(--font-display); letter-spacing: 0.02em; }
+.focus-count { font: 600 0.85rem/1 var(--font-body); color: var(--muted); }
+.focus-note { margin-top: 8px; font-size: 0.86rem; font-weight: 600; color: var(--danger); }
+.my-tasks-all .my-task-list { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding-inline: 12px; }
+.my-task-list { margin: 0; padding: 0; list-style: none; }
+.my-task { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 6px 0; font-size: 0.9rem; border-bottom: 1px solid var(--line); }
+.my-task:last-child { border-bottom: 0; }
+.my-task .dot { flex: none; width: 9px; height: 9px; box-shadow: none; }
+.my-task-main { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.my-task-main .win-meta { display: block; margin-top: 1px; }
+.my-task .due-note { margin-left: auto; }
+.focus-star { flex: none; width: 40px; height: 40px; padding: 0; font-size: 1.35rem; line-height: 1; color: var(--muted); background: none; border: 1px solid transparent; border-radius: 50%; cursor: pointer; }
+.focus-star:hover { color: var(--orange); background: var(--surface-2); }
+.focus-star[aria-pressed="true"] { color: var(--orange); }
+.my-tasks .mine-done { margin-top: 14px; }
+.my-tasks .mine-done .my-task-list { padding-inline: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.my-task.is-done { padding-left: 4px; }
+/* Everyone's focus, where everyone sees it: on a person's card, on a task's row and window */
+.person-focus { font-weight: 700; color: var(--orange); white-space: nowrap; }
+.focus-mark { flex: none; align-self: center; font-size: 0.9rem; line-height: 1; color: var(--orange); }
+.task-focus { font-weight: 600; color: var(--orange); }
+.focus-for { width: fit-content; padding: 3px 10px; font-size: 0.86rem; font-weight: 600; color: var(--warn-fg); background: var(--warn-bg); border-radius: 12px; }
 /* Too narrow for one line: the bar drops under the name and the numbers. */
 @media (max-width: 700px) {
   .person-head { grid-template-columns: minmax(0, 1fr) auto; padding: 8px 12px; }
@@ -986,7 +1013,8 @@ body::before {
 .view-switch { display: inline-flex; }
 .view-switch .btn { border-radius: 0; }
 .view-switch .btn:first-child { border-radius: 6px 0 0 6px; }
-.view-switch .btn:last-child { margin-left: -1px; border-radius: 0 6px 6px 0; }
+.view-switch .btn:last-child { border-radius: 0 6px 6px 0; }
+.view-switch .btn + .btn { margin-left: -1px; }
 .view-switch .btn[aria-pressed="true"] { position: relative; color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
 .my-meetings { max-width: 900px; }
 .mine-list { list-style: none; overflow: hidden; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }

@@ -253,9 +253,12 @@
         <span class="spacer"></span>
         <div class="view-switch" role="group" aria-label="What the People page shows">
           <button id="people-tab-load" class="btn btn-quiet btn-small" type="button" aria-pressed="true">Workload</button>
+          <button id="people-tab-tasks" class="btn btn-quiet btn-small" type="button" aria-pressed="false">My Tasks</button>
           <button id="people-tab-subtasks" class="btn btn-quiet btn-small" type="button" aria-pressed="false">Subtasks</button>
         </div>
       </div>
+      <!-- My Tasks: this person's own tasks, in every project, and the three they're focusing on -->
+      <div id="my-tasks" class="my-tasks" hidden></div>
       <!-- Subtasks: this person's own subtasks, in every project and task -->
       <div id="my-subtasks" class="my-subtasks" hidden></div>
       <p class="people-hint">

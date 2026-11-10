@@ -80,6 +80,8 @@ const state = {
   writes: 0, // bumps on every change so a slower, older read can't undo it
   pollTimer: null,
   peopleOpen: new Set(), // whose cards are open on the People page
+  focus: [], // everyone's focus tasks: {task_id, person_key, name, set_at}
+  focusNote: null, // why the last star on My Tasks didn't take, until the next one does
   lastRoll: 0, // when this page last asked the board to check for reminders
   rolledDay: "", // and which day that was, so it asks again when the date changes
   windowEntryHref: history.state?.boardWindow ? location.href : null, // this history entry's address, if it was added for a phone's window
@@ -359,6 +361,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     setReminder: (taskId, remindAt, note) => rpc("movers_set_reminder", { p_token: token, p_task_id: taskId, p_remind_at: remindAt, p_note: note }),
     clearReminder: (taskId) => rpc("movers_clear_reminder", { p_token: token, p_task_id: taskId }),
     likeUpdate: (taskId, at, on) => rpc("movers_like_update", { p_token: token, p_task_id: taskId, p_at: at, p_on: on }),
+    setFocus: (taskId, on) => rpc("movers_set_focus", { p_token: token, p_task_id: taskId, p_on: on }),
     taskHistory: (taskId) => rpc("movers_task_history", { p_token: token, p_task_id: taskId }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
     saveProject: (id, name, color) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name, p_color: color }),
@@ -500,6 +503,8 @@ function showGate(message) {
   state.deleted = [];
   state.people = [];
   state.reminders = [];
+  state.focus = [];
+  state.focusNote = null;
   state.personColors = new Map();
   state.personColorsFor = "";
   state.version = -1;
@@ -864,7 +869,7 @@ function rowSignature(task) {
   return JSON.stringify([
     task.title, task.assignees, task.urgency, task.deadline, task.repeat, task.status, task.progress,
     task.updated_by, timeAgo(task.updated_at), deadlineNote(task)?.text, subtaskSummary(task),
-    task.custom, state.columnsSig, mirrorNote(task, state.projectId),
+    task.custom, state.columnsSig, mirrorNote(task, state.projectId), focusNames(task.id),
   ]);
 }
 
@@ -931,7 +936,9 @@ function renderRow(task) {
       el("span", { class: "grip", "aria-hidden": "true" }),
       el("div", { class: "task-text" },
         el("button", { class: "task-title", type: "button" }, task.title),
-        el("div", { class: "task-meta" }, `${task.updated_by} · ${timeAgo(task.updated_at)}${subtaskSummary(task)}${repeats(task) ? ` · Repeats ${task.repeat}` : ""}${mirrored ? ` · ${mirrored}` : ""}`)),
+        el("div", { class: "task-meta" }, `${task.updated_by} · ${timeAgo(task.updated_at)}${subtaskSummary(task)}${repeats(task) ? ` · Repeats ${task.repeat}` : ""}${mirrored ? ` · ${mirrored}` : ""}`,
+          // Whose focus task it is, which everyone sees.
+          focusNames(task.id).length > 0 && el("span", { class: "task-focus" }, ` · ★ Focus: ${focusNames(task.id).join(", ")}`))),
       // Only shows on phones, in place of the columns.
       el("div", { class: "task-glance", role: "img", "aria-label": `Urgency ${URGENCY[task.urgency]}, status ${STATUS[task.status]}, progress ${task.progress}%${repeats(task) ? `, repeats ${task.repeat}` : ""}` },
         el("span", { class: "task-glance-line" }, el("span", { class: `dot dot-${task.urgency}` }), STATUS[task.status]),
@@ -1467,6 +1474,7 @@ async function refresh() {
         state.deleted = result.deleted || [];
         state.people = result.people || [];
         state.reminders = result.reminders || [];
+        state.focus = result.focus || [];
         announceNotices(state.notifications);
         renderBoard();
       }
@@ -2730,6 +2738,8 @@ function buildTaskWindow(w, task) {
     isSubtask && el("p", { class: "win-parent" }, "Part of ", el("button", { class: "link-btn", type: "button", "data-open-task": task.parent_id }, "")),
     nameField,
     detailsField,
+    // Whose focus task this is, when it's someone's.
+    el("p", { class: "focus-for", "data-focus-for": true, hidden: true }),
     // Outside the sections, so it shows whichever of them is folded away.
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
     // Who it's for, when it's due and where it stands. Folded, its heading says the gist.
@@ -2873,6 +2883,12 @@ function renderTaskWindow(w) {
   }
   nameColumnFields(w.body, task.project_id);
   renderOwnFields(w, task);
+  const focusFor = w.body.querySelector("[data-focus-for]");
+  const focusers = focusNames(task.id);
+  if (focusFor) {
+    focusFor.hidden = !focusers.length;
+    focusFor.textContent = focusers.length ? `★ A focus task for ${nameList(focusers)}` : "";
+  }
   w.mirrorPicker?.render();
   // The gist of the folded section, for its heading: who, when, how urgent, how far along.
   const gist = [
@@ -4766,15 +4782,18 @@ function workload() {
 // The People page has two tabs: everyone's workload, and this person's own subtasks. The
 // tab last used is the one it opens on next time, on this device.
 const PEOPLE_VIEW_KEY = "board.peopleView";
-state.peopleView = readStorage("localStorage", PEOPLE_VIEW_KEY) === "subtasks" ? "subtasks" : "load";
+const PEOPLE_VIEWS = ["load", "tasks", "subtasks"];
+state.peopleView = PEOPLE_VIEWS.includes(readStorage("localStorage", PEOPLE_VIEW_KEY)) ? readStorage("localStorage", PEOPLE_VIEW_KEY) : "load";
 
 function setPeopleView(view) {
   state.peopleView = view;
-  writeStorage("localStorage", PEOPLE_VIEW_KEY, view === "subtasks" ? "subtasks" : null);
+  state.focusNote = null;
+  writeStorage("localStorage", PEOPLE_VIEW_KEY, view === "load" ? null : view);
   renderPeoplePage();
 }
 
 $("people-tab-load").addEventListener("click", () => setPeopleView("load"));
+$("people-tab-tasks").addEventListener("click", () => setPeopleView("tasks"));
 $("people-tab-subtasks").addEventListener("click", () => setPeopleView("subtasks"));
 
 // Every subtask assigned to this person, in every project: what's still to do under the
@@ -4853,16 +4872,133 @@ $("my-subtasks").addEventListener("change", (event) => {
   if (box) updateTask(box.dataset.done, { status: box.checked ? "done" : "todo" });
 });
 
+// ---------- People: your own tasks, and the three you're focusing on ----------
+
+// Each person can tag up to three of their tasks as the ones they're putting first, and
+// everyone sees them: on the person's card, and on each task. The board keeps them.
+const MAX_FOCUS = 3;
+const bySetAt = (a, b) => a.set_at.localeCompare(b.set_at);
+// A person's focus tasks, in the order they tagged them.
+const focusIdsOf = (key) => (state.focus || []).filter((f) => key && f.person_key === key).sort(bySetAt).map((f) => f.task_id).filter((id) => findTask(id));
+// Whose focus task this is, by name, in the order they tagged it.
+const focusNames = (taskId) => (state.focus || []).filter((f) => f.task_id === taskId).sort(bySetAt).map((f) => f.name);
+
+// Every task assigned to this person, main or supporting, in every project: the ones they're
+// focusing on, then all that are open, the most urgent first and then the soonest due, and
+// what's done folded away. Subtasks have a tab of their own.
+function renderMyTasks() {
+  const me = personKey(state.name);
+  const rank = (t) => URGENCY_ORDER.indexOf(t.urgency);
+  const mostUrgentFirst = (a, b) => rank(a) - rank(b) || (a.deadline || "9999").localeCompare(b.deadline || "9999") || a.title.localeCompare(b.title);
+  const mine = state.tasks.filter((t) => !t.parent_id && t.assignees.some((name) => personKey(name) === me));
+  const open = mine.filter((t) => t.status !== "done").sort(mostUrgentFirst);
+  const done = mine.filter((t) => t.status === "done").sort((a, b) => String(b.done_at || "").localeCompare(String(a.done_at || "")));
+  const focus = focusIdsOf(me).filter((id) => open.some((t) => t.id === id));
+  const overdue = open.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
+  const today = open.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
+  $("people-summary").textContent = [`${open.length} open`, overdue && `${overdue} overdue`, today && `${today} due today`, `${focus.length} of ${MAX_FOCUS} focus`].filter(Boolean).join(" · ");
+
+  const rowView = (t) => ({
+    id: t.id,
+    title: t.title,
+    urgency: t.urgency,
+    done: t.status === "done",
+    focus: focus.includes(t.id),
+    // On a task several people are on, whether this person is the main or supporting, and whom.
+    about: [URGENCY[t.urgency], state.projects.find((p) => p.id === t.project_id)?.name, roleOn(t, me), STATUS[t.status], `${t.progress}%`].filter(Boolean).join(" · "),
+    due: t.status === "done" ? null : deadlineNote(t),
+  });
+  const view = { focus: focus.map((id) => rowView(findTask(id))), open: open.map(rowView), done: done.map(rowView), note: state.focusNote };
+
+  // Only rebuilds when something shows differently, so the Done group and keyboard focus survive a refresh.
+  const box = $("my-tasks");
+  const signature = JSON.stringify(view);
+  if (box.dataset.sig === signature) return;
+  const doneOpen = !!box.querySelector(".mine-done")?.open;
+  box.dataset.sig = signature;
+  const row = (t) => el("li", { class: `my-task${t.focus ? " is-focus" : ""}${t.done ? " is-done" : ""}`, "data-my-task": t.id },
+    !t.done && el("button", {
+      class: "focus-star",
+      type: "button",
+      "data-focus": t.id,
+      "aria-pressed": String(t.focus),
+      "aria-label": t.focus ? `Take ${t.title} off your focus tasks` : `Make ${t.title} a focus task`,
+      title: t.focus ? "A focus task. Press to take it off" : "Make this a focus task",
+    }, t.focus ? "★" : "☆"),
+    el("span", { class: `dot dot-${t.urgency}`, role: "img", "aria-label": `${URGENCY[t.urgency]} urgency`, title: `${URGENCY[t.urgency]} urgency` }),
+    el("span", { class: "my-task-main" },
+      el("button", { class: `link-btn${t.done ? " subtask-done" : ""}`, type: "button", "data-open-task": t.id }, t.title),
+      el("span", { class: "win-meta" }, t.about)),
+    t.due && el("span", { class: `due-note due-${t.due.tone}` }, t.due.text));
+  box.replaceChildren(...[
+    el("section", { class: "focus-box", "data-focus-list": true },
+      el("h2", { class: "focus-head" }, "★ Focus", el("span", { class: "focus-count" }, `${view.focus.length} of ${MAX_FOCUS}`)),
+      view.focus.length
+        ? el("ol", { class: "my-task-list" }, ...view.focus.map(row))
+        : el("p", { class: "win-empty" }, "No focus tasks yet. Star up to three of your tasks below: the ones you're putting first. Everyone on the board sees them."),
+      el("p", { class: "focus-note", role: "alert", "data-focus-note": true, hidden: !view.note }, view.note || "")),
+    el("section", { class: "my-tasks-all", "data-task-list": true },
+      el("h2", { class: "subtask-project" }, `All my tasks (${view.open.length})`),
+      view.open.length
+        ? el("ul", { class: "my-task-list" }, ...view.open.map(row))
+        : el("p", { class: "win-empty" }, view.done.length ? "Nothing open." : "You have no tasks. One shows here once it's assigned to you. Subtasks are on their own tab.")),
+    view.done.length > 0 && el("details", { class: "mine-done", open: doneOpen },
+      el("summary", {}, `Done (${view.done.length})`),
+      el("ul", { class: "my-task-list" }, ...view.done.map(row))),
+  ].filter(Boolean));
+}
+
+// Starring shows at once, and the board's answer follows: if it's refused, the star goes
+// back and the reason shows under the focus list.
+const FOCUS_REFUSED = {
+  focus_full: "You can have three focus tasks. Take one off first.",
+  not_assigned: "That task isn't assigned to you any more.",
+  task_done: "That task is done, so it can't be a focus task.",
+  not_a_task: "A focus task is a task, not a subtask.",
+};
+async function toggleFocus(button) {
+  const id = button.dataset.focus;
+  const on = button.getAttribute("aria-pressed") !== "true";
+  const me = personKey(state.name);
+  if (on && focusIdsOf(me).length >= MAX_FOCUS) {
+    state.focusNote = FOCUS_REFUSED.focus_full;
+    return renderMyTasks();
+  }
+  state.focusNote = null;
+  const before = state.focus;
+  state.focus = on
+    ? [...state.focus, { task_id: id, person_key: me, name: state.name, set_at: new Date().toISOString() }]
+    : state.focus.filter((f) => !(f.person_key === me && f.task_id === id));
+  renderBoard();
+  // The list was redrawn, so the keyboard goes back to that task's star in the full list.
+  $("my-tasks").querySelector(`[data-task-list] [data-focus="${CSS.escape(id)}"]`)?.focus();
+  const result = await write(() => state.store.setFocus(id, on), null);
+  if (!result.ok && result.error) {
+    state.focus = before;
+    state.focusNote = FOCUS_REFUSED[result.error.code] || "That didn't save. Check your connection and try again.";
+    renderBoard();
+  }
+}
+
+$("my-tasks").addEventListener("click", (event) => {
+  const star = event.target.closest("[data-focus]");
+  if (star) return toggleFocus(star);
+  const task = event.target.closest("[data-open-task]");
+  if (task) openTask(task.dataset.openTask);
+});
+
 function renderPeoplePage() {
   if ($("people-view").hidden) return;
-  // The workload and the subtasks share the page: one shows, and the workload's key goes with it.
-  const listing = state.peopleView === "subtasks";
-  $("people-tab-load").setAttribute("aria-pressed", String(!listing));
-  $("people-tab-subtasks").setAttribute("aria-pressed", String(listing));
-  $("my-subtasks").hidden = !listing;
-  $("people-cards").hidden = listing;
-  document.querySelector(".people-hint").hidden = listing;
-  if (listing) return renderMySubtasks();
+  // The workload, this person's tasks and their subtasks share the page: one shows, and the
+  // workload's key goes with it.
+  const showing = state.peopleView;
+  for (const name of PEOPLE_VIEWS) $(`people-tab-${name}`).setAttribute("aria-pressed", String(showing === name));
+  $("my-tasks").hidden = showing !== "tasks";
+  $("my-subtasks").hidden = showing !== "subtasks";
+  $("people-cards").hidden = showing !== "load";
+  document.querySelector(".people-hint").hidden = showing !== "load";
+  if (showing === "tasks") return renderMyTasks();
+  if (showing === "subtasks") return renderMySubtasks();
   const { open, cards } = workload();
   const urgent = open.filter((t) => t.urgency === "critical" || t.urgency === "high").length;
   const unassigned = open.filter((t) => !t.assignees.length).length;
@@ -4871,9 +5007,15 @@ function renderPeoplePage() {
   // Bars are measured against the busiest person, so the longest bar is the biggest load.
   const most = Math.max(1, ...cards.map((c) => c.tasks.length));
   const me = personKey(state.name);
-  const view = cards.map((c) => ({
+  const cardsView = cards.map((c) => {
+    const focus = focusIdsOf(c.key);
+    const place = (t) => (focus.includes(t.id) ? focus.indexOf(t.id) : focus.length);
+    return { ...c, focus, tasks: [...c.tasks].sort((a, b) => place(a) - place(b)) };
+  });
+  const view = cardsView.map((c) => ({
     key: c.key,
     name: c.key === me ? `${c.name} (you)` : c.name,
+    focus: c.focus.filter((id) => c.tasks.some((t) => t.id === id)).length,
     person: c.key ? c.name : null,
     count: c.tasks.length,
     urgent: c.urgent,
@@ -4882,7 +5024,7 @@ function renderPeoplePage() {
     done: c.done,
     width: Math.round((c.tasks.length / most) * 100),
     // On a task several people are on, whether this person is the main or supporting, and whom.
-    tasks: c.tasks.map((t) => ({ id: t.id, title: t.title, urgency: t.urgency, about: [roleOn(t, c.key), taskPlace(t), STATUS[t.status], `${t.progress}%`].filter(Boolean).join(" · "), due: deadlineNote(t) })),
+    tasks: c.tasks.map((t) => ({ id: t.id, title: t.title, urgency: t.urgency, focus: c.focus.includes(t.id), about: [roleOn(t, c.key), taskPlace(t), STATUS[t.status], `${t.progress}%`].filter(Boolean).join(" · "), due: deadlineNote(t) })),
   }));
 
   // Only rebuilds when something shows differently, so an open card and keyboard focus survive a refresh.
@@ -4897,6 +5039,7 @@ function renderPeoplePage() {
         : el("span", { class: "person-name person-nobody" }, c.name),
       " ",
       el("span", { class: "person-figures" },
+        c.focus > 0 && el("span", { class: "person-focus", title: `${c.focus} focus ${c.focus === 1 ? "task" : "tasks"}` }, `★ ${c.focus} focus`), " ",
         el("span", { class: `person-urgent${c.urgent ? " has-urgent" : ""}` }, `${c.urgent} urgent`), " ",
         el("span", { class: "person-open" }, `${c.count} open`), " ",
         el("span", { class: "person-toggle", "aria-hidden": "true" })),
@@ -4911,7 +5054,8 @@ function renderPeoplePage() {
         c.overdue > 0 && el("span", { class: "person-overdue" }, `${c.overdue} overdue`), " ",
         c.done > 0 && el("span", { class: "person-done" }, `${c.done} done`)),
       c.tasks.length
-        ? el("ul", { class: "person-tasks" }, ...c.tasks.map((t) => el("li", { class: "person-task", "data-person-task": t.id },
+        ? el("ul", { class: "person-tasks" }, ...c.tasks.map((t) => el("li", { class: `person-task${t.focus ? " is-focus" : ""}`, "data-person-task": t.id },
+          t.focus && el("span", { class: "focus-mark", role: "img", "aria-label": "Focus task", title: "Focus task" }, "★"),
           el("span", { class: `dot dot-${t.urgency}`, role: "img", "aria-label": `${URGENCY[t.urgency]} urgency`, title: `${URGENCY[t.urgency]} urgency` }),
           el("span", { class: "person-task-main" },
             el("button", { class: "link-btn", type: "button", "data-open-task": t.id }, t.title), " ",
