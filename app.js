@@ -3752,11 +3752,16 @@ function renderCalendar() {
   renderWaitingBanner();
 
   // The week and the list share the page: one shows, and the week's own controls go with it.
+  // On a phone the week is a list of days, since seven columns of people don't fit.
   const listing = state.calendarView === "mine";
+  const phone = isPhone();
   $("view-week").setAttribute("aria-pressed", String(!listing));
   $("view-mine").setAttribute("aria-pressed", String(listing));
   $("my-meetings").hidden = !listing;
-  for (const part of [$("week-prev"), $("week-next"), $("week-today"), document.querySelector(".week-scroll"), document.querySelector(".week-legend")]) part.hidden = listing;
+  for (const part of [$("week-prev"), $("week-next"), $("week-today")]) part.hidden = listing;
+  document.querySelector(".week-scroll").hidden = listing || phone;
+  document.querySelector(".week-legend").hidden = listing || phone;
+  $("week-days").hidden = listing || !phone;
   if (listing) {
     $("week-title").textContent = "My meetings";
     renderMyMeetings();
@@ -3777,6 +3782,7 @@ function renderCalendar() {
     .map((m) => ({ m, at: occurrenceOn(m, date) }))
     .filter(({ m, at }) => at && !(isCompleted(m) && repeats(m) && dayKey(date) > dayKey(new Date(m.completed_at))))
     .sort((a, b) => a.at - b.at || byStart(a.m, b.m)));
+  if (phone) return renderWeekDays(days, onDay, today);
   const rows = calendarPeople().map((person) => ({
     ...person,
     cells: onDay.map((meetings) => meetings
@@ -3835,6 +3841,115 @@ function renderCalendar() {
     if (todayTab) scroller.scrollLeft = todayTab.getBoundingClientRect().left - grid.querySelector(".week-person").getBoundingClientRect().right;
   }
 }
+
+// ---------- The week on a phone: a day at a time ----------
+
+// A place that's a web address shows as its site, which is short enough for a phone.
+function placeText(place) {
+  if (!/^https?:\/\/\S+$/i.test(place || "")) return place || "";
+  try { return new URL(place).host.replace(/^www\./, ""); } catch { return place; }
+}
+
+// One meeting as a card on its day: when, what, who's in it and where it stands for this person.
+function dayCard(m, at) {
+  const end = new Date(at.getTime() + (new Date(m.ends_at) - new Date(m.starts_at)));
+  const me = personKey(state.name);
+  const invite = !isOrganizer(m) && myInvite(m);
+  const others = m.people.map((p) => p.name).filter((name) => personKey(name) !== me);
+  const with_ = others.length ? `with ${others.join(", ")}` : "";
+  const who = isOrganizer(m) ? (others.length ? capitalize(with_) : "Just you")
+    : invite ? `Set by ${m.created_by}${with_ ? `, ${with_}` : ""}`
+    : `${m.created_by}${with_ ? ` ${with_}` : ""}`;
+  const status = isCompleted(m) ? ["Completed", "done"] : invite ? [MY_ANSWER[invite.answer], invite.answer] : meetingStatus(m);
+  return {
+    id: m.id,
+    title: m.title,
+    time: `${formatTime(at)} – ${formatTime(end)}`,
+    repeat: repeats(m) ? repeatPhrase(m.repeat, new Date(m.starts_at)) : null,
+    meta: [who, placeText(m.place), findTask(m.task_id) && `Task: ${findTask(m.task_id).title}`].filter(Boolean),
+    status,
+  };
+}
+
+function renderWeekDays(days, onDay, today) {
+  const view = days.map((date, i) => ({
+    day: dayKey(date),
+    label: formatDay(date),
+    today: dayKey(date) === today,
+    past: dayKey(date) < today,
+    meetings: onDay[i].map(({ m, at }) => dayCard(m, at)),
+  }));
+  // Only rebuilds when something shows differently, so the keyboard keeps its place.
+  const box = $("week-days");
+  const signature = JSON.stringify(view);
+  if (box.dataset.sig === signature) return;
+  box.dataset.sig = signature;
+  box.replaceChildren(...view.map((d) => el("section", { class: `day${d.today ? " is-today" : ""}${d.past ? " is-past" : ""}${d.meetings.length ? "" : " is-empty"}`, "data-day": d.day },
+    el("div", { class: "day-head" },
+      el("h2", { class: "day-name" }, d.label, d.today && el("span", { class: "day-today" }, "Today")),
+      !d.meetings.length && el("span", { class: "day-none" }, "No meetings"),
+      el("button", { class: "day-add", type: "button", "data-add-day": d.day, "aria-label": `Set a meeting on ${d.label}` }, "+")),
+    d.meetings.length > 0 && el("ul", { class: "day-list" }, ...d.meetings.map((c) => el("li", {},
+      el("button", { class: `day-meeting is-${c.status[1]}`, type: "button", "data-meeting": c.id },
+        el("span", { class: "day-time" }, c.time),
+        el("span", { class: "day-status" }, c.status[0]),
+        el("span", { class: "day-title" }, c.title, c.repeat && el("span", { class: "day-repeat" }, `↻ ${c.repeat}`)),
+        el("span", { class: "day-meta" }, c.meta.join(" · ")))))))));
+}
+
+$("week-days").addEventListener("click", (event) => {
+  const card = event.target.closest("[data-meeting]");
+  if (card) return openMeeting(card.dataset.meeting);
+  const add = event.target.closest("[data-add-day]");
+  if (add) openMeetingForm({ day: add.dataset.addDay });
+});
+
+// Turning a phone on its side, or making a window narrow, swaps the grid and the list.
+window.matchMedia("(max-width: 700px)").addEventListener("change", () => {
+  renderCalendar();
+  renderLayoutSwitch();
+});
+
+// ---------- Phone or desktop layout ----------
+
+// On a phone the board is laid out for the phone. Desktop view lays it out as on a computer
+// instead, zoomed out to fit, for the whole board: the week as a grid, the tasks as a sheet.
+// The choice is kept on this device, and the page is laid out again from the start, which
+// the few lines at the top of index.html do before anything is drawn.
+const LAYOUT_KEY = "board.layout";
+const desktopChosen = () => readStorage("localStorage", LAYOUT_KEY) === "desktop";
+
+// A phone showing the desktop layout has a bar at the very top of the page to go back,
+// since the top bar's own buttons may be off to the side. Otherwise the top bar has it.
+function renderLayoutSwitch() {
+  const desktop = desktopChosen();
+  const onPhone = document.documentElement.classList.contains("desktop-on-phone");
+  const button = $("layout-btn");
+  button.hidden = onPhone || (!desktop && !isPhone());
+  button.textContent = desktop ? "Mobile view" : "Desktop view";
+  button.title = desktop ? "Lay the board out for this phone again" : "Lay the board out as on a computer, zoomed out to fit";
+}
+
+function setLayout(desktop) {
+  writeStorage("localStorage", LAYOUT_KEY, desktop ? "desktop" : null);
+  renderLayoutSwitch();
+  reloadPage();
+}
+
+$("layout-btn").addEventListener("click", () => {
+  const button = $("layout-btn");
+  // Laying the page out again starts it afresh, so a form being filled in would be lost.
+  const formOpen = [...state.windows.values()].some((w) => w.body.tagName === "FORM");
+  if (formOpen && !armButton(button, "A form is open. Switch anyway?", button.textContent)) return;
+  setLayout(!desktopChosen());
+});
+$("layout-back").addEventListener("click", () => {
+  const button = $("layout-back");
+  const formOpen = [...state.windows.values()].some((w) => w.body.tagName === "FORM");
+  if (formOpen && !armButton(button, "A form is open. Switch anyway?", "Mobile view")) return;
+  setLayout(false);
+});
+renderLayoutSwitch();
 
 // The meetings this person set can be dragged from one day of the week to another. Every
 // day cell is somewhere a card can be dropped, on anyone's row: only the day counts.

@@ -922,6 +922,52 @@ body::before {
 .week-chip-sample:hover { box-shadow: none; }
 .week-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 12px; font-size: 0.85rem; color: var(--muted); }
 
+/* The week on a phone: a card for each day, and in it a card for each meeting, colored as
+   on the grid. A day with nothing on is one line, with its + to set a meeting. */
+.week-days { display: flex; flex-direction: column; gap: 10px; }
+.day { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.day.is-today { border-color: var(--navy); }
+.day-head { display: flex; align-items: center; gap: 10px; min-height: 50px; padding: 5px 6px 5px 12px; }
+.day.is-today .day-head { background: var(--today-bg); }
+.day-name { flex: 1 1 auto; min-width: 0; font: 700 1.08rem/1.2 var(--font-display); letter-spacing: 0.02em; }
+.day.is-empty .day-name { flex: 0 1 auto; }
+.day.is-past .day-name { color: var(--muted); }
+.day-today { display: inline-block; margin-left: 8px; padding: 1px 8px; font: 700 0.7rem/1.5 var(--font-body); letter-spacing: 0.05em; text-transform: uppercase; vertical-align: 2px; color: var(--on-navy); background: var(--navy); border-radius: 9px; }
+.day-none { flex: 1 1 auto; min-width: 0; font-size: 0.85rem; color: var(--muted); }
+.day-add { flex: none; width: 42px; height: 42px; padding: 0; font-size: 1.45rem; line-height: 1; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 50%; cursor: pointer; }
+.day-add:hover { background: var(--surface-2); }
+.day-list { display: flex; flex-direction: column; gap: 6px; padding: 0 8px 8px; list-style: none; }
+.day-meeting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 10px;
+  width: 100%;
+  min-height: 56px;
+  padding: 8px 10px 9px 12px;
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 5px solid var(--navy);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.day-meeting:hover { background: var(--surface-2); }
+.day-time { font-size: 0.85rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.day-status { justify-self: end; font-size: 0.78rem; font-weight: 600; text-align: right; color: var(--ok-fg); }
+.day-title { grid-column: 1 / -1; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.day-repeat { display: block; margin-top: 1px; font-size: 0.8rem; font-weight: 400; color: var(--muted); }
+.day-meta { grid-column: 1 / -1; font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+/* Unsettled: dashed, as a waiting meeting is on the grid */
+.day-meeting.is-waiting { border-style: dashed; border-color: var(--orange); border-left-style: solid; }
+.day-meeting.is-waiting .day-status { color: var(--warn-fg); }
+.day-meeting.is-declined { border-left-color: var(--danger); }
+.day-meeting.is-declined .day-status { color: var(--danger); }
+/* Completed: still on its day, set back so what's still to do stands out */
+.day-meeting.is-done { background: var(--surface-2); border-left-color: var(--line); }
+.day-meeting.is-done .day-title, .day-meeting.is-done .day-status { color: var(--muted); }
+
 /* A meeting's window */
 .meeting-status { width: fit-content; padding: 2px 10px; font-size: 0.8rem; font-weight: 700; border-radius: 11px; }
 .meeting-status.is-confirmed { color: var(--ok-fg); background: var(--ok-bg); }
@@ -1444,6 +1490,33 @@ body::before {
   .notify-head .link-btn { color: var(--on-navy); }
   .notify-item { padding-block: 12px; }
 
+  /* The top bar is several lines tall here, so it goes up with the page rather than staying
+     over a quarter of the screen. Who's signed in shares a line with the switch to the
+     desktop layout, and the buttons go on the line under it: the bell, Leave, and the
+     page's own button at the end. The bell is enough to say what it is. */
+  .topbar { position: static; }
+  .topbar-actions::before { content: ""; order: 1; flex-basis: 100%; height: 0; margin-top: -8px; }
+  .topbar-actions > * { order: 2; }
+  .topbar-actions .who, .topbar-actions .layout-btn { order: 0; }
+  .topbar-actions .layout-btn { padding-inline: 12px; font-size: 0.88rem; }
+  #add-btn, #set-meeting-btn { margin-left: auto; }
+  .notify-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .notify-bell { margin-right: 0; }
+  #notify-btn { padding-inline: 12px; }
+
+  /* The calendar: the week's title between its arrows on one line, and Today and the
+     choice of view under them. Everything to tap is a finger's width. */
+  #calendar-view .page-head { display: grid; grid-template-columns: 44px minmax(0, 1fr) 44px; align-items: center; gap: 8px; }
+  #calendar-view .page-head .spacer { display: none; }
+  #week-prev { grid-area: 1 / 1; }
+  #week-title { grid-area: 1 / 2; font-size: 1.15rem; text-align: center; }
+  #week-next { grid-area: 1 / 3; }
+  #week-today { grid-area: 2 / 1 / 3 / 3; justify-self: start; }
+  #calendar-view .view-switch { grid-area: 2 / 2 / 3 / 4; justify-self: end; }
+  #week-prev, #week-next { padding-inline: 0; }
+  #calendar-view .page-head .btn { min-height: 40px; }
+  .week-waiting { margin-bottom: 10px; padding: 8px 10px; font-size: 0.9rem; }
+
   .win { inset: 0 !important; width: auto !important; height: auto !important; border: 0; border-radius: 0; }
   .win .win-bar { cursor: default; padding-left: 8px; padding-top: max(7px, env(safe-area-inset-top, 0px)); background: var(--navy); }
   .win-back { display: block; }
@@ -1458,6 +1531,22 @@ body::before {
   .gate-band { padding-inline: 20px; }
   .gate-body { padding-inline: 20px; }
 }
+
+/* A phone showing the board as on a computer, zoomed out to fit: a bar across the top with
+   the way back, drawn large so it can be read and tapped without zooming in first. */
+.desktop-note { display: none; }
+.desktop-on-phone .desktop-note {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin: 0;
+  padding: 14px max(20px, env(safe-area-inset-left, 0px));
+  font-size: 2rem;
+  font-weight: 600;
+  color: var(--on-navy);
+  background: var(--navy);
+}
+.desktop-on-phone .desktop-note .btn { min-height: 92px; padding: 10px 30px; font-size: 2.2rem; color: var(--navy); background: var(--surface); }
 
 @media (prefers-reduced-motion: reduce) {
   * { scroll-behavior: auto !important; transition: none !important; }
