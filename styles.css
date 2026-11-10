@@ -1318,7 +1318,7 @@ body::before {
 .activity-system { color: var(--muted); }
 .activity-note { display: block; margin-top: 1px; white-space: pre-wrap; }
 
-/* Under an update: a Like button, and who has liked it. Lit once this person has. */
+/* Under an update: an Acknowledge button, and who has acknowledged it. Lit once this person has. */
 .like-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; }
 .like-btn { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 2px 10px; font-size: 0.8rem; font-weight: 600; color: var(--muted); background: var(--surface); border: 1px solid var(--line); border-radius: 13px; cursor: pointer; }
 .like-btn:hover { color: var(--ink); border-color: var(--muted); }

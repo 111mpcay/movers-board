@@ -39,6 +39,7 @@ const MEETING_NOTICE = {
   accepted: "accepted your meeting",
   declined: "declined your meeting",
   changed: "changed a meeting",
+  rescheduled: "rescheduled a meeting",
   removed: "removed you from a meeting",
   cancelled: "cancelled a meeting",
 };
@@ -358,6 +359,9 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     removeMeetingPerson: (id, name) => rpc("movers_remove_meeting_person", { p_token: token, p_id: id, p_name: name }),
     cancelMeeting: (id) => rpc("movers_cancel_meeting", { p_token: token, p_id: id }),
     completeMeeting: (id, done) => rpc("movers_complete_meeting", { p_token: token, p_id: id, p_done: done }),
+    rescheduleMeeting: (id, startsAt, endsAt, reason, askAgain) => rpc("movers_reschedule_meeting", {
+      p_token: token, p_id: id, p_starts_at: startsAt, p_ends_at: endsAt, p_reason: reason, p_ask_again: askAgain,
+    }),
     async uploadFile(taskId, file) {
       const { path, upload_url: uploadUrl } = await fileService("upload", { task_id: taskId });
       const res = await fetch(uploadUrl, {
@@ -2061,7 +2065,8 @@ function icon(paths, size = 16) {
 }
 const CALENDAR_ICON = ["M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M4 10h16", "M8 3v4", "M16 3v4"];
 
-// ---------- Liking an update ----------
+// ---------- Acknowledging an update ----------
+// The page calls it acknowledging. Underneath, here and on the board, it's kept as a like.
 
 const LIKE_ICON = ["M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3z", "M7 11l4-8a2 2 0 0 1 2 2v4h5.5a2 2 0 0 1 2 2.3l-1.2 7a2 2 0 0 1-2 1.7H7"];
 
@@ -2081,12 +2086,12 @@ function nameList(names) {
   return said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said.at(-1)}` : said[0] || "";
 }
 
-// Under an update: a Like button on someone else's, with who has liked it so far. Your own
-// has no button, only who has liked it.
+// Under an update: an Acknowledge button on someone else's, with who has acknowledged it so
+// far. Your own has no button, only who has.
 function likeRow(task, entry) {
   const names = likesOf(task, entry);
   if (personKey(entry.by) === personKey(state.name)) {
-    return names.length ? el("span", { class: "like-row" }, el("span", { class: "like-note", "data-liked-by": true }, `Liked by ${nameList(names)}`)) : null;
+    return names.length ? el("span", { class: "like-row" }, el("span", { class: "like-note", "data-liked-by": true }, `Acknowledged by ${nameList(names)}`)) : null;
   }
   const mine = names.some((n) => personKey(n) === personKey(state.name));
   return el("span", { class: "like-row" },
@@ -2095,8 +2100,8 @@ function likeRow(task, entry) {
       type: "button",
       "data-like": entry.at,
       "aria-pressed": String(mine),
-      "aria-label": mine ? `You liked ${entry.by}'s update. Press to take it back` : `Like ${entry.by}'s update`,
-    }, icon(LIKE_ICON, 15), mine ? "Liked" : "Like", names.length > 0 && el("span", { class: "like-count" }, String(names.length))),
+      "aria-label": mine ? `You acknowledged ${entry.by}'s update. Press to take it back` : `Acknowledge ${entry.by}'s update`,
+    }, icon(LIKE_ICON, 15), mine ? "Acknowledged" : "Acknowledge", names.length > 0 && el("span", { class: "like-count" }, String(names.length))),
     names.length > 0 && el("span", { class: "like-note", "data-liked-by": true }, capitalize(nameList(names))));
 }
 
@@ -2113,7 +2118,7 @@ async function likeUpdate(w, button) {
   // The list was redrawn, so the keyboard goes back to the button it was on.
   [...w.body.querySelectorAll("[data-like]")].find((b) => b.dataset.like === at)?.focus();
   const result = await write(() => state.store.likeUpdate(w.taskId, at, on), null);
-  if (w.root.isConnected) showWindowError(w, result.ok ? null : "That like didn't save. Check your connection and try again.");
+  if (w.root.isConnected) showWindowError(w, result.ok ? null : "That didn't save. Check your connection and try again.");
 }
 
 // Each person has their own reminders, and sees only those. One per subtask.
@@ -2467,6 +2472,17 @@ function showWindowError(w, message) {
   note.hidden = !message;
 }
 
+// Says what's wrong with one field of a form and goes to it. The message shows down by the
+// button, which going to the field scrolls away from, so the field is marked as well until
+// something is typed in it.
+function fieldError(w, message, name) {
+  showWindowError(w, message);
+  const box = w.body.querySelector(`[data-input="${name}"]`);
+  box.setAttribute("aria-invalid", "true");
+  box.addEventListener("input", () => box.removeAttribute("aria-invalid"), { once: true });
+  box.focus();
+}
+
 function setFieldValue(w, name, value) {
   const control = w.body.querySelector(`[data-field="${name}"]`);
   if (control && control !== document.activeElement) control.value = value ?? "";
@@ -2662,6 +2678,11 @@ function renderWindows() {
       if (!findMeeting(w.meetingId)) {
         closeWindow(w);
         if (!w.deleting) showSyncNote(deletedNote(w.meetingId, "A meeting you had open is no longer on the calendar."));
+      } else if (w.showNow) {
+        // A Reschedule window goes once its meeting is completed, and otherwise keeps
+        // saying when the meeting is now.
+        if (isCompleted(findMeeting(w.meetingId))) closeWindow(w);
+        else w.showNow();
       } else if (!w.isForm) {
         renderMeetingWindow(w);
       }
@@ -3617,6 +3638,7 @@ function renderMeetingWindow(w) {
       el("button", { class: "link-btn", type: "button", "data-answer": "accepted" }, "Change to accepted")),
     organizer && !done && el("button", { class: "btn btn-accept", type: "button", "data-complete-meeting": true }, "Complete meeting"),
     organizer && done && el("button", { class: "btn btn-quiet", type: "button", "data-reopen-meeting": true }, "Reopen"),
+    organizer && !done && el("button", { class: "btn btn-quiet", type: "button", "data-reschedule-meeting": true }, "Reschedule"),
     organizer && el("button", { class: "btn btn-quiet", type: "button", "data-edit-meeting": true }, "Edit"),
     organizer && el("button", { class: "btn btn-danger", type: "button", "data-cancel-meeting": true }, "Cancel meeting"),
   ].filter(Boolean));
@@ -3631,6 +3653,7 @@ function onMeetingClick(w, event) {
   const remove = target.closest("[data-remove-person]");
   if (remove) return removeMeetingPerson(w, remove);
   if (target.closest("[data-edit-meeting]")) return openMeetingForm({ meeting: findMeeting(w.meetingId) });
+  if (target.closest("[data-reschedule-meeting]")) return openReschedule(w.meetingId);
   const cancel = target.closest("[data-cancel-meeting]");
   if (cancel) return cancelMeeting(w, cancel);
   const complete = target.closest("[data-complete-meeting], [data-reopen-meeting]");
@@ -3705,6 +3728,151 @@ async function cancelMeeting(w, button) {
     button.disabled = false;
     showWindowError(w, "That meeting wasn't cancelled. Check your connection and try again.");
   }
+}
+
+// ---------- Rescheduling a meeting ----------
+
+// The time a meeting is being moved from: its own, or for a repeating one its next date.
+function rescheduleFrom(m) {
+  const start = repeats(m) ? nextOccurrence(m) : new Date(m.starts_at);
+  return { start, end: new Date(start.getTime() + (new Date(m.ends_at) - new Date(m.starts_at))) };
+}
+
+// A repeating meeting is kept as its first date, so moving its next date means moving that.
+// Moved by a few days, the whole series shifts by as many, as when it's dragged to another
+// day. Moved further, that would leave an earlier date as the next one, so the series
+// starts again from the date chosen.
+function seriesStart(m, from, start, length) {
+  const days = Math.round((parseDate(dayKey(start)) - parseDate(dayKey(from))) / 86400000);
+  const first = new Date(m.starts_at);
+  const shifted = new Date(first.getFullYear(), first.getMonth(), first.getDate() + days, start.getHours(), start.getMinutes());
+  const next = nextOccurrence({ ...m, starts_at: shifted.toISOString(), ends_at: new Date(shifted.getTime() + length).toISOString() });
+  return next.getTime() === start.getTime() ? shifted : start;
+}
+
+// The small window for moving a meeting to a new time in one step: when, why, and whether
+// the people in it should answer again. Only whoever set the meeting is offered it, and
+// not once the meeting is completed.
+function openReschedule(id) {
+  const meeting = findMeeting(id);
+  if (!meeting || !isOrganizer(meeting) || isCompleted(meeting)) return;
+  const key = `reschedule:${id}`;
+  let w = state.windows.get(key);
+  if (!w) {
+    w = createWindow(key, "Reschedule");
+    w.meetingId = id;
+    w.isForm = true;
+    w.width = Math.min(w.width, 420);
+    w.height = Math.min(w.height, 580);
+    placeWindow(w);
+    buildRescheduleForm(w, meeting);
+  }
+  showWindow(w);
+  w.body.querySelector('[data-input="date"]').focus();
+}
+
+function buildRescheduleForm(w, meeting) {
+  const form = el("form", { class: "win-body", novalidate: true },
+    el("p", { class: "remind-for" }, "Moving ", el("strong", {}, meeting.title)),
+    el("p", { class: "hint", "data-reschedule-now": true }),
+    field("New date", el("input", { class: "input", type: "date", "data-input": "date" })),
+    el("div", { class: "field-row meeting-times" },
+      field("Start", el("input", { class: "input", type: "time", "data-input": "start" })),
+      field("End", el("input", { class: "input", type: "time", "data-input": "end" }))),
+    el("p", { class: "hint", "data-reschedule-repeat": true, hidden: true }),
+    field("Reason", textInput({ maxlength: "200", placeholder: "Why it's moving (optional)", "data-input": "reason" })),
+    // With nobody invited there's nobody to ask.
+    el("label", { class: "check", hidden: !meeting.people.length },
+      el("input", { type: "checkbox", checked: true, "data-input": "again" }),
+      el("span", { class: "check-text" }, "Ask everyone to answer again",
+        el("span", { class: "hint" }, "Their answers were for the old time. Until someone accepts, only the people in it see the meeting."))),
+    el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
+    el("div", { class: "win-new-actions" }, el("button", { class: "btn btn-primary", type: "submit" }, "Reschedule")));
+  w.body.replaceWith(form);
+  w.body = form;
+
+  const input = (name) => form.querySelector(`[data-input="${name}"]`);
+  const from = rescheduleFrom(meeting);
+  input("date").value = dayKey(from.start);
+  input("start").value = clockValue(from.start);
+  input("end").value = clockValue(from.end);
+
+  // When the meeting is now, kept right if it changes while this window is open.
+  w.showNow = () => {
+    const m = findMeeting(w.meetingId);
+    const now = rescheduleFrom(m);
+    const times = `${formatTime(now.start)} to ${formatTime(now.end)}`;
+    form.querySelector("[data-reschedule-now]").textContent = repeats(m)
+      ? `It's now ${repeatPhrase(m.repeat, now.start)}, ${times}. Next: ${formatDay(now.start)}.`
+      : `It's now on ${formatDay(now.start)}, ${times}.`;
+  };
+  w.showNow();
+
+  // A repeating meeting moves as a whole, so this says what the date picked makes of it.
+  const showRepeat = () => {
+    const m = findMeeting(w.meetingId);
+    const day = input("date").value && parseDate(input("date").value);
+    const note = form.querySelector("[data-reschedule-repeat]");
+    note.hidden = !m || !repeats(m) || !day;
+    note.textContent = note.hidden ? "" : `It repeats, so every date moves with it: ${repeatPhrase(m.repeat, day)} from ${formatDay(day)}.`;
+  };
+  input("date").addEventListener("change", showRepeat);
+  showRepeat();
+
+  // A new start takes the end with it, so the meeting stays as long as it was.
+  const minutes = (value) => { const [hours, mins] = value.split(":").map(Number); return hours * 60 + mins; };
+  let length = minutes(input("end").value) - minutes(input("start").value);
+  input("end").addEventListener("change", () => {
+    const now = minutes(input("end").value) - minutes(input("start").value);
+    if (now > 0) length = now;
+  });
+  input("start").addEventListener("change", () => {
+    if (!input("start").value || !(length > 0)) return;
+    const end = Math.min(minutes(input("start").value) + length, 23 * 60 + 59);
+    input("end").value = `${pad2(Math.floor(end / 60))}:${pad2(end % 60)}`;
+  });
+  form.addEventListener("submit", (event) => submitReschedule(w, event));
+}
+
+async function submitReschedule(w, event) {
+  event.preventDefault();
+  const meeting = findMeeting(w.meetingId);
+  if (!meeting) return;
+  const input = (name) => w.body.querySelector(`[data-input="${name}"]`);
+  const [date, from, to] = ["date", "start", "end"].map((name) => input(name).value);
+  if (!date || !from || !to) return fieldError(w, "Choose a date, a start and an end.", !date ? "date" : from ? "end" : "start");
+  if (to <= from) return fieldError(w, "The meeting has to end after it starts.", "end");
+  const start = new Date(`${date}T${from}`), end = new Date(`${date}T${to}`);
+  const now = rescheduleFrom(meeting);
+  if (start.getTime() === now.start.getTime() && end.getTime() === now.end.getTime()) return fieldError(w, "That's the time it already has.", "date");
+  if (!(start > new Date())) return fieldError(w, "Choose a time that's still to come.", "date");
+  showWindowError(w, null);
+
+  const first = repeats(meeting) ? seriesStart(meeting, now.start, start, end - start) : start;
+  const fields = { starts_at: first.toISOString(), ends_at: new Date(first.getTime() + (end - start)).toISOString() };
+  const askAgain = meeting.people.length > 0 && input("again").checked;
+  const button = w.body.querySelector('button[type="submit"]');
+  button.disabled = true;
+  const saved = await write(() => state.store.rescheduleMeeting(meeting.id, fields.starts_at, fields.ends_at, input("reason").value.trim(), askAgain), null);
+  button.disabled = false;
+  if (!saved.ok) {
+    const code = saved.error?.code;
+    if (code === "meeting_in_past") return fieldError(w, "Choose a time that's still to come.", "date");
+    if (code === "invalid_meeting_time") return fieldError(w, "The meeting has to end after it starts.", "end");
+    return showWindowError(w, code === "meeting_completed" ? "This meeting is completed. Reopen it to reschedule it."
+      : code === "not_organizer" ? "Only whoever set this meeting can reschedule it."
+      : "That meeting wasn't rescheduled. Check your connection and try again.");
+  }
+
+  // Shown at once, rather than when the next read arrives.
+  const moved = findMeeting(meeting.id);
+  if (moved) {
+    Object.assign(moved, fields);
+    if (askAgain) moved.people.forEach((p) => { p.answer = "waiting"; });
+  }
+  closeWindow(w);
+  state.weekStart = startOfWeek(start); // the Calendar goes to the week the meeting is in now
+  renderBoard();
 }
 
 // ---------- Setting or editing a meeting ----------
@@ -3814,15 +3982,7 @@ async function submitMeetingForm(w, meeting, event) {
   event.preventDefault();
   const form = w.body;
   const value = (name) => form.querySelector(`[data-input="${name}"]`).value.trim();
-  // The message shows down by the button, which going to the field scrolls away from, so
-  // the field is marked as well until something is typed in it.
-  const fail = (message, name) => {
-    showWindowError(w, message);
-    const box = form.querySelector(`[data-input="${name}"]`);
-    box.setAttribute("aria-invalid", "true");
-    box.addEventListener("input", () => box.removeAttribute("aria-invalid"), { once: true });
-    box.focus();
-  };
+  const fail = (message, name) => fieldError(w, message, name);
   const [title, goal, date, start, end] = ["title", "goal", "date", "start", "end"].map(value);
   if (!title) return fail("Give the meeting a title.", "title");
   if (!goal) return fail("Give the meeting a goal.", "goal");
@@ -4040,13 +4200,15 @@ function notificationLines(n) {
   }
   if (n.kind === "meeting") {
     const when = meetingWhen(n.repeat, n.starts_at);
-    return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, n.action === "changed" ? `now ${when}` : when]];
+    // A move says when the meeting is now, and a reschedule the reason given, if any.
+    const moved = n.action === "changed" || n.action === "rescheduled";
+    return [`${n.by_name} ${MEETING_NOTICE[n.action]}`, [n.title, moved ? `now ${when}` : when], n.action === "rescheduled" && n.detail ? `“${n.detail}”` : null];
   }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
   // One this person set for themselves, with the note they wrote.
   if (n.action === "reminder") return ["Reminder you set", where, n.detail ? `“${n.detail}”` : null];
   // Someone has seen an update this person posted, and said so.
-  if (n.action === "liked") return [`${n.by_name} liked your update`, where, `“${String(n.detail || "")}”`];
+  if (n.action === "liked") return [`${n.by_name} acknowledged your update`, where, `“${String(n.detail || "")}”`];
   if (n.action === "mentioned" || n.action === "mentioned_update") {
     return [`${n.by_name} mentioned you in ${n.action === "mentioned" ? "a comment" : "an update"}`, where, `“${String(n.detail || "")}”`];
   }
@@ -4158,7 +4320,7 @@ function renderNotifications() {
           change && el("span", { class: "notify-task notify-change" }, change),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, likes on your updates, reminders you set, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, updates of yours that were acknowledged, reminders you set, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {
