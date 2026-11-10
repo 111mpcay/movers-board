@@ -341,6 +341,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     addComment: (taskId, body, mentions) => rpc("movers_add_task_comment", { p_token: token, p_task_id: taskId, p_body: body, p_mentions: mentions }),
     setReminder: (taskId, remindAt, note) => rpc("movers_set_reminder", { p_token: token, p_task_id: taskId, p_remind_at: remindAt, p_note: note }),
     clearReminder: (taskId) => rpc("movers_clear_reminder", { p_token: token, p_task_id: taskId }),
+    likeUpdate: (taskId, at, on) => rpc("movers_like_update", { p_token: token, p_task_id: taskId, p_at: at, p_on: on }),
     taskHistory: (taskId) => rpc("movers_task_history", { p_token: token, p_task_id: taskId }),
     remove: (id) => rpc("movers_delete_task", { p_token: token, p_id: id }),
     saveProject: (id, name, color) => rpc("movers_save_project", { p_token: token, p_id: id, p_name: name, p_color: color }),
@@ -2019,6 +2020,61 @@ function icon(paths, size = 16) {
 }
 const CALENDAR_ICON = ["M5 5h14a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z", "M4 10h16", "M8 3v4", "M16 3v4"];
 
+// ---------- Liking an update ----------
+
+const LIKE_ICON = ["M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3z", "M7 11l4-8a2 2 0 0 1 2 2v4h5.5a2 2 0 0 1 2 2.3l-1.2 7a2 2 0 0 1-2 1.7H7"];
+
+// An update is known by the moment it was posted, to the microsecond, which is finer than a
+// Date keeps. This turns either spelling of that moment into the same key.
+const stampKey = (iso) => {
+  const text = String(iso || "");
+  return `${Math.floor(Date.parse(text) / 1000)}.${(text.match(/\.(\d+)/)?.[1] || "").padEnd(6, "0").slice(0, 6)}`;
+};
+// The people who like an update, in the order they liked it.
+const likesOf = (task, entry) => (task.likes || []).filter((l) => stampKey(l.at) === stampKey(entry.at)).map((l) => l.by);
+
+// "you and Alex", "Alex, Jo and Sam": this person first.
+function nameList(names) {
+  const me = personKey(state.name);
+  const said = [...names.filter((n) => personKey(n) === me).map(() => "you"), ...names.filter((n) => personKey(n) !== me)];
+  return said.length > 1 ? `${said.slice(0, -1).join(", ")} and ${said.at(-1)}` : said[0] || "";
+}
+
+// Under an update: a Like button on someone else's, with who has liked it so far. Your own
+// has no button, only who has liked it.
+function likeRow(task, entry) {
+  const names = likesOf(task, entry);
+  if (personKey(entry.by) === personKey(state.name)) {
+    return names.length ? el("span", { class: "like-row" }, el("span", { class: "like-note", "data-liked-by": true }, `Liked by ${nameList(names)}`)) : null;
+  }
+  const mine = names.some((n) => personKey(n) === personKey(state.name));
+  return el("span", { class: "like-row" },
+    el("button", {
+      class: `like-btn${mine ? " is-liked" : ""}`,
+      type: "button",
+      "data-like": entry.at,
+      "aria-pressed": String(mine),
+      "aria-label": mine ? `You liked ${entry.by}'s update. Press to take it back` : `Like ${entry.by}'s update`,
+    }, icon(LIKE_ICON, 15), mine ? "Liked" : "Like", names.length > 0 && el("span", { class: "like-count" }, String(names.length))),
+    names.length > 0 && el("span", { class: "like-note", "data-liked-by": true }, capitalize(nameList(names))));
+}
+
+// Likes an update, or takes the like back. It shows at once, and the board's answer follows:
+// if it didn't save, the next read puts it back as it was.
+async function likeUpdate(w, button) {
+  const at = button.dataset.like;
+  const on = button.getAttribute("aria-pressed") !== "true";
+  const task = findTask(w.taskId);
+  if (!task) return;
+  const mine = (l) => stampKey(l.at) === stampKey(at) && personKey(l.by) === personKey(state.name);
+  task.likes = [...(task.likes || []).filter((l) => !mine(l)), ...(on ? [{ at, by: state.name }] : [])];
+  renderTaskWindow(w);
+  // The list was redrawn, so the keyboard goes back to the button it was on.
+  [...w.body.querySelectorAll("[data-like]")].find((b) => b.dataset.like === at)?.focus();
+  const result = await write(() => state.store.likeUpdate(w.taskId, at, on), null);
+  if (w.root.isConnected) showWindowError(w, result.ok ? null : "That like didn't save. Check your connection and try again.");
+}
+
 // Each person has their own reminders, and sees only those. One per subtask.
 const myReminder = (taskId) => (state.reminders || []).find((r) => r.task_id === taskId);
 const reminderWhen = (reminder) => `${formatDay(new Date(reminder.remind_at))}, ${formatTime(new Date(reminder.remind_at))}`;
@@ -2496,12 +2552,14 @@ function renderTaskWindow(w) {
   const entrySignature = (entry) => [entry.at, entry.by, entry.kind, entry.text, entry.mentions, timeAgo(entry.at), state.name];
   // How long ago, with the exact day and time on hover.
   const when = (entry) => el("span", { class: "activity-time", title: new Date(entry.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }, timeAgo(entry.at));
-  renderList(w, "updates", notes.map(entrySignature), () =>
+  renderList(w, "updates", notes.map((entry) => [...entrySignature(entry), likesOf(task, entry)]), () =>
     notes.length ? notes.map((entry) => el("li", {},
       el("strong", {}, entry.by), " ",
       el("span", { class: "activity-time" }, timeAgo(entry.at)),
       // The people an update mentions stand out, as they do in a comment.
-      el("span", { class: "activity-note" }, ...commentBody({ body: entry.text, mentions: entry.mentions })))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
+      el("span", { class: "activity-note" }, ...commentBody({ body: entry.text, mentions: entry.mentions })),
+      // A way to say it's been seen, and who has.
+      likeRow(task, entry))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
   // A task carries its latest fifty entries, and the board keeps every one. When there are
   // more, the rest are fetched once the section is open, and again when the count moves on.
   const total = task.history_count ?? entries.length;
@@ -2658,6 +2716,8 @@ function onWindowClick(w, event) {
   const target = event.target;
   const remind = target.closest("[data-remind]");
   if (remind) return openReminder(remind.dataset.remind);
+  const like = target.closest("[data-like]");
+  if (like) return likeUpdate(w, like);
   const opener = target.closest("[data-open-task]");
   if (opener) return openTask(opener.dataset.openTask);
   const meeting = target.closest("[data-open-meeting]");
@@ -3943,6 +4003,8 @@ function notificationLines(n) {
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
   // One this person set for themselves, with the note they wrote.
   if (n.action === "reminder") return ["Reminder you set", where, n.detail ? `“${n.detail}”` : null];
+  // Someone has seen an update this person posted, and said so.
+  if (n.action === "liked") return [`${n.by_name} liked your update`, where, `“${String(n.detail || "")}”`];
   if (n.action === "mentioned" || n.action === "mentioned_update") {
     return [`${n.by_name} mentioned you in ${n.action === "mentioned" ? "a comment" : "an update"}`, where, `“${String(n.detail || "")}”`];
   }
@@ -4050,7 +4112,7 @@ function renderNotifications() {
           change && el("span", { class: "notify-task notify-change" }, change),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, reminders you set, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, likes on your updates, reminders you set, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {
@@ -4092,8 +4154,8 @@ $("notify-read-all").addEventListener("click", () => markNotificationsRead(null)
 $("notify-list").addEventListener("click", (event) => {
   const item = event.target.closest("[data-notification]");
   if (!item) return;
-  // A mention opens the task at the section it was made in.
-  const mentionedIn = { mentioned: "comments", mentioned_update: "updates" }[state.notifications.find((n) => n.id === item.dataset.notification)?.action];
+  // A mention opens the task at the section it was made in, and a like at the updates.
+  const mentionedIn = { mentioned: "comments", mentioned_update: "updates", liked: "updates" }[state.notifications.find((n) => n.id === item.dataset.notification)?.action];
   markNotificationsRead([item.dataset.notification]);
   // On a phone the list is its own page, so leave it up when there's nothing to go to.
   if (!isPhone() || findTask(item.dataset.task) || findMeeting(item.dataset.openMeeting)) closeNotifications();
