@@ -1418,6 +1418,9 @@ body::before {
 .activity-edited { margin-left: 6px; color: var(--muted); font-size: 0.8rem; }
 .activity-edited::before { content: "· "; }
 .activity-list .is-editing .win-form { margin-top: 0; }
+/* On a subtask you created, in its task's list: Edit and Delete at the end of its row */
+.subtask-actions { float: none; margin-left: 0; }
+.win-item.is-editing .subtask-edit { flex: 1 1 100%; margin-top: 0; }
 /* An update that came from a meeting's notes is tagged, with the meeting it came from. */
 .post-from { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-top: 3px; font-size: 0.8rem; }
 .post-tag { padding: 1px 8px; font-size: 0.72rem; font-weight: 700; color: var(--on-navy); background: var(--navy); border-radius: 9px; white-space: nowrap; }

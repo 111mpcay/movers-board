@@ -2947,10 +2947,15 @@ function renderTaskWindow(w) {
   const subtasks = [...subtasksOf(task.id), ...heldBy(task.id)];
   const from = (s) => (held.has(s.id) ? findProject(s.project_id)?.name || "" : null);
   setCount(w, "subtasks", subtasks.length ? `${subtasks.filter((s) => s.status === "done").length}/${subtasks.length}` : "");
-  renderList(w, "subtasks", subtasks.map((s) => [s.id, s.title, s.assignees, s.status, deadlineNote(s)?.text, from(s), myReminder(s.id)?.remind_at]), () =>
+  // Whoever created a subtask can rename it or delete it from here. Not a task that's only
+  // mirrored in, which is renamed and deleted where it lives. While one is being renamed the
+  // list is left as it is, so the box and what's typed survive the board refreshing.
+  const ownSubtask = (s) => !held.has(s.id) && s.parent_id === task.id && personKey(s.created_by) === personKey(state.name);
+  renderList(w, "subtasks", w.editingSubtask ? ["editing", w.editingSubtask] : subtasks.map((s) => [s.id, s.title, s.assignees, s.status, deadlineNote(s)?.text, from(s), myReminder(s.id)?.remind_at, ownSubtask(s)]), () =>
     subtasks.length ? subtasks.map((s) => {
       const due = deadlineNote(s);
-      return el("li", { class: `win-item${held.has(s.id) ? " is-mirrored" : ""}` },
+      if (w.editingSubtask === s.id) return el("li", { class: "win-item is-editing", "data-subtask-row": s.id }, subtaskEditForm(s));
+      return el("li", { class: `win-item${held.has(s.id) ? " is-mirrored" : ""}`, "data-subtask-row": s.id },
         el("input", { type: "checkbox", "data-done": s.id, checked: s.status === "done", "aria-label": `Mark ${s.title} done` }),
         el("span", { class: "win-item-main" },
           el("button", { class: `link-btn${s.status === "done" ? " subtask-done" : ""}`, type: "button", "data-open-task": s.id }, s.title)),
@@ -2960,7 +2965,10 @@ function renderTaskWindow(w) {
           : el("button", { class: "link-btn win-meta", type: "button", "data-assign": s.id, "aria-label": `Assign ${s.title}` }, "Unassigned"),
         due && el("span", { class: `due-note due-${due.tone}` }, due.text),
         // A reminder to yourself about this subtask. Not on a task that's only mirrored in.
-        !held.has(s.id) && reminderButton(s));
+        !held.has(s.id) && reminderButton(s),
+        ownSubtask(s) && el("span", { class: "own-actions subtask-actions" },
+          el("button", { class: "link-btn", type: "button", "data-edit-subtask": s.id, "aria-label": `Rename ${s.title}` }, "Edit"),
+          el("button", { class: "win-remove", type: "button", "data-delete-subtask": s.id, "aria-label": `Delete ${s.title}` }, "Delete")));
     }) : [el("li", { class: "win-empty" }, "No subtasks yet.")]);
 
   // Notes people wrote stay in view under Updates. History, a section of its own, has
@@ -3140,6 +3148,8 @@ async function onWindowSubmit(w, event) {
     focusAfter = input("text");
   } else if (form.dataset.form === "edit-update" || form.dataset.form === "edit-comment") {
     return saveOwnEdit(w, form);
+  } else if (form.dataset.form === "edit-subtask") {
+    return saveSubtaskName(w, form);
   } else if (form.dataset.form === "link") {
     let url = input("url").value.trim();
     if (!url) return input("url").focus();
@@ -3175,6 +3185,11 @@ function onWindowClick(w, event) {
   const target = event.target;
   const remind = target.closest("[data-remind]");
   if (remind) return openReminder(remind.dataset.remind);
+  const editSubtask = target.closest("[data-edit-subtask]");
+  if (editSubtask) return startSubtaskEdit(w, editSubtask.dataset.editSubtask);
+  if (target.closest("[data-cancel-subtask]")) return stopSubtaskEdit(w);
+  const deleteSub = target.closest("[data-delete-subtask]");
+  if (deleteSub) return deleteSubtask(w, deleteSub);
   const like = target.closest("[data-like]");
   if (like) return likeUpdate(w, like);
   const image = target.closest("[data-image]");
@@ -3330,6 +3345,89 @@ async function deleteTask(w, button) {
     button.disabled = false;
     const what = findTask(id)?.parent_id ? "subtask" : "task";
     showWindowError(w, refusedDelete(result) ? `Only whoever created this ${what} can delete it.` : `That ${what} wasn't deleted. Check your connection and try again.`);
+  }
+}
+
+// ---------- Renaming or deleting a subtask you created ----------
+
+// The box a subtask is renamed in, with its name in it. Esc gives up the rename.
+function subtaskEditForm(subtask) {
+  const input = textInput({ maxlength: "200", "aria-label": `New name for ${subtask.title}`, "data-input": "title" });
+  input.value = subtask.title;
+  const cancel = el("button", { class: "btn btn-quiet", type: "button", "data-cancel-subtask": true }, "Cancel");
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation(); // Esc here gives up the rename, not the whole window
+    cancel.click();
+  });
+  const form = el("form", { class: "win-form subtask-edit", "data-form": "edit-subtask", novalidate: true },
+    input, el("button", { class: "btn btn-primary", type: "submit" }, "Save"), cancel);
+  form.dataset.key = subtask.id;
+  return form;
+}
+
+function startSubtaskEdit(w, id) {
+  w.editingSubtask = id;
+  showWindowError(w, null);
+  renderTaskWindow(w);
+  const box = w.body.querySelector('[data-form="edit-subtask"] [data-input="title"]');
+  if (!box) return;
+  box.focus();
+  box.select();
+}
+
+function stopSubtaskEdit(w) {
+  const was = w.editingSubtask;
+  w.editingSubtask = null;
+  showWindowError(w, null);
+  renderTaskWindow(w);
+  // The keyboard goes back to the Edit button it came from.
+  if (was) w.body.querySelector(`[data-edit-subtask="${CSS.escape(was)}"]`)?.focus();
+}
+
+// A new name has to be one no other subtask of this task has, as when it's added.
+function saveSubtaskName(w, form) {
+  const id = form.dataset.key;
+  const box = form.querySelector('[data-input="title"]');
+  const title = box.value.trim();
+  const subtask = findTask(id);
+  if (!title) return box.focus();
+  if (!subtask || title === subtask.title) return stopSubtaskEdit(w);
+  const clash = taskNamed(title, { parentId: w.taskId, except: id });
+  if (clash) {
+    showWindowError(w, nameTakenMessage(clash, w.taskId));
+    return box.focus();
+  }
+  w.editingSubtask = null;
+  showWindowError(w, null);
+  updateTask(id, { title });
+  renderTaskWindow(w);
+  w.body.querySelector(`[data-edit-subtask="${CSS.escape(id)}"]`)?.focus();
+}
+
+// Deleting takes a second press. The board deletes it only for whoever created it, and
+// notes it in the task's history.
+async function deleteSubtask(w, button) {
+  const id = button.dataset.deleteSubtask;
+  if (!armButton(button, "Confirm?", "Delete")) return;
+  button.disabled = true;
+  // Its own window may close during the refresh below, before this function resumes.
+  const going = state.windows.get(id);
+  if (going) going.deleting = true;
+  const result = await write(() => state.store.remove(id), null);
+  if (result.ok) {
+    if (going) closeWindow(going);
+    state.tasks = state.tasks.filter((t) => t.id !== id);
+    state.store.cleanFiles().catch(() => { /* retried by the next removal */ });
+    if (w.root.isConnected && findTask(w.taskId)) {
+      showWindowError(w, null);
+      renderTaskWindow(w);
+    }
+  } else {
+    if (going) going.deleting = false;
+    button.disabled = false;
+    if (w.root.isConnected) showWindowError(w, refusedDelete(result) ? "Only whoever created this subtask can delete it." : "That subtask wasn't deleted. Check your connection and try again.");
   }
 }
 
