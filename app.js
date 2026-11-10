@@ -326,6 +326,17 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     }
     return body;
   }
+  // Puts a file in the folder the server function issues for the task, and says where.
+  async function putFile(taskId, file) {
+    const { path, upload_url: uploadUrl } = await fileService("upload", { task_id: taskId });
+    const res = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { apikey: supabaseKey, "Content-Type": file.type || "application/octet-stream", "x-upsert": "false" },
+      body: file,
+    });
+    if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+    return path;
+  }
   return {
     isDemo: false,
     setToken(value) { token = value; },
@@ -338,8 +349,9 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     move: (id, position, projectId = null) => rpc("movers_move_task", { p_token: token, p_id: id, p_position: position, p_project: projectId }),
     // Everywhere a task is mirrored, as the whole list: {task_id} for inside a task, {project_id} for a project's list.
     mirrorTask: (id, targets) => rpc("movers_mirror_task", { p_token: token, p_id: id, p_targets: targets }),
-    addUpdate: (id, text, mentions) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text, p_mentions: mentions || [] }),
-    addComment: (taskId, body, mentions) => rpc("movers_add_task_comment", { p_token: token, p_task_id: taskId, p_body: body, p_mentions: mentions }),
+    // `images` are the uploads to post with it, as uploadImage gave them.
+    addUpdate: (id, text, mentions, images) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text, p_mentions: mentions || [], p_images: images || [] }),
+    addComment: (taskId, body, mentions, images) => rpc("movers_add_task_comment", { p_token: token, p_task_id: taskId, p_body: body, p_mentions: mentions || [], p_images: images || [] }),
     editUpdate: (taskId, at, text, mentions) => rpc("movers_edit_task_update", { p_token: token, p_task_id: taskId, p_at: at, p_text: text, p_mentions: mentions || [] }),
     deleteUpdate: (taskId, at) => rpc("movers_delete_task_update", { p_token: token, p_task_id: taskId, p_at: at }),
     editComment: (id, body, mentions) => rpc("movers_edit_task_comment", { p_token: token, p_id: id, p_body: body, p_mentions: mentions || [] }),
@@ -363,19 +375,19 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     removeMeetingPerson: (id, name) => rpc("movers_remove_meeting_person", { p_token: token, p_id: id, p_name: name }),
     cancelMeeting: (id) => rpc("movers_cancel_meeting", { p_token: token, p_id: id }),
     completeMeeting: (id, done) => rpc("movers_complete_meeting", { p_token: token, p_id: id, p_done: done }),
+    addMeetingNote: (meetingId, body) => rpc("movers_add_meeting_note", { p_token: token, p_meeting_id: meetingId, p_body: body }),
+    editMeetingNote: (id, body) => rpc("movers_edit_meeting_note", { p_token: token, p_id: id, p_body: body }),
+    deleteMeetingNote: (id) => rpc("movers_delete_meeting_note", { p_token: token, p_id: id }),
     rescheduleMeeting: (id, startsAt, endsAt, reason, askAgain) => rpc("movers_reschedule_meeting", {
       p_token: token, p_id: id, p_starts_at: startsAt, p_ends_at: endsAt, p_reason: reason, p_ask_again: askAgain,
     }),
     async uploadFile(taskId, file) {
-      const { path, upload_url: uploadUrl } = await fileService("upload", { task_id: taskId });
-      const res = await fetch(uploadUrl, {
-        method: "PUT",
-        headers: { apikey: supabaseKey, "Content-Type": file.type || "application/octet-stream", "x-upsert": "false" },
-        body: file,
-      });
-      if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+      const path = await putFile(taskId, file);
       await rpc("movers_add_file", { p_token: token, p_task_id: taskId, p_path: path, p_name: file.name });
     },
+    // Uploads an image pasted into an update or a comment, to be posted with it. The board
+    // keeps it once that's posted.
+    uploadImage: async (taskId, file) => ({ path: await putFile(taskId, file), name: file.name }),
     fileUrl: async (id, download) => (await fileService("open", { attachment_id: id, download })).url,
     cleanFiles: () => fileService("clean"),
   };
@@ -2272,8 +2284,9 @@ function commentBody(comment) {
 // The box a comment or an update is written in. Typing @ lists the people on the board,
 // narrowed by what follows it: Enter, Tab or a click puts the name in, and Escape puts the
 // list away. With `cancel` it's for editing what's already posted: it starts with those
-// words in it and has a Cancel button, which Escape presses when no list is open.
-function mentionForm({ name, placeholder, label, button, maxlength, value = "", cancel = false }) {
+// words in it and has a Cancel button, which Escape presses when no list is open. With
+// `images` it takes images pasted into it too, to post with the words.
+function mentionForm({ name, placeholder, label, button, maxlength, value = "", cancel = false, images = false }) {
   const input = textInput({ maxlength, placeholder, "aria-label": label, autocomplete: "off", "data-input": "text" });
   input.value = value;
   const cancelButton = cancel ? el("button", { class: "btn btn-quiet", type: "button", "data-cancel-edit": true }, "Cancel") : null;
@@ -2354,11 +2367,117 @@ function mentionForm({ name, placeholder, label, button, maxlength, value = "", 
     pick(option.dataset.mention);
   });
 
-  return el("form", { class: "win-form mention-form", "data-form": name, novalidate: true },
+  const form = el("form", { class: "win-form mention-form", "data-form": name, novalidate: true },
     input,
     el("button", { class: "btn btn-primary", type: "submit" }, button),
     cancelButton,
     list);
+  if (images) takePastedImages(form, input);
+  return form;
+}
+
+// ---------- Pasting images into an update or a comment ----------
+
+const PASTE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGES = 6;
+
+// Lets a posting box take images from the clipboard, such as a screenshot. They wait under
+// the box as small pictures, each with a way to take it off, and are posted with the words.
+// `form.pastedImages` is what's waiting, for whoever posts the form.
+function takePastedImages(form, input) {
+  form.pastedImages = [];
+  const tray = el("ul", { class: "paste-tray", "data-paste-list": true, hidden: true });
+  const note = el("p", { class: "paste-note", role: "alert", "data-paste-note": true, hidden: true });
+  form.append(tray, note);
+  const say = (message) => {
+    note.textContent = message || "";
+    note.hidden = !message;
+  };
+  const render = () => {
+    tray.hidden = !form.pastedImages.length;
+    tray.replaceChildren(...form.pastedImages.map((item, i) => el("li", { class: "paste-item", "data-pasted": true },
+      el("img", { src: item.preview, alt: "" }),
+      el("span", { class: "paste-name" }, item.file.name || "Image"),
+      el("button", { class: "win-remove", type: "button", "data-remove-pasted": String(i), "aria-label": `Remove ${item.file.name || "the image"}` }, "Remove"))));
+  };
+  input.addEventListener("paste", (event) => {
+    const files = [...(event.clipboardData?.files || [])];
+    // Words go into the box as usual. So does a copy from a spreadsheet or a document,
+    // which comes with a picture of itself as well as its words.
+    if (!files.length || event.clipboardData.getData("text/plain")) return;
+    event.preventDefault();
+    let problem = null;
+    for (const file of files) {
+      if (!PASTE_TYPES.includes(file.type)) problem = "Only PNG, JPEG, GIF or WebP images can be pasted here.";
+      else if (file.size > MAX_IMAGE_BYTES) problem = `${file.name || "That image"} is too large. Images can be up to 10 MB.`;
+      else if (form.pastedImages.length >= MAX_IMAGES) problem = "Six images is the most for one post.";
+      else form.pastedImages.push({ file, preview: URL.createObjectURL(file) });
+    }
+    say(problem);
+    render();
+  });
+  tray.addEventListener("click", (event) => {
+    const remove = event.target.closest("[data-remove-pasted]");
+    if (!remove) return;
+    const [gone] = form.pastedImages.splice(Number(remove.dataset.removePasted), 1);
+    if (gone) URL.revokeObjectURL(gone.preview);
+    say(null);
+    render();
+    input.focus();
+  });
+  // Once it's posted the form is reset, and what was waiting goes with it.
+  form.addEventListener("reset", () => {
+    form.pastedImages.forEach((item) => URL.revokeObjectURL(item.preview));
+    form.pastedImages = [];
+    say(null);
+    render();
+  });
+}
+
+// What posting a box does: uploads the images waiting under it, then posts them with the
+// words. Images with no words are posted as "Image". Null when there's nothing to post.
+function postingWithImages(w, form, post) {
+  const typed = form.querySelector('[data-input="text"]').value.trim();
+  const waiting = (form.pastedImages || []).map((item) => item.file);
+  if (!typed && !waiting.length) return null;
+  const text = typed || (waiting.length > 1 ? "Images" : "Image");
+  return async () => {
+    const images = [];
+    for (const file of waiting) images.push(await state.store.uploadImage(w.taskId, file));
+    return post(text, images);
+  };
+}
+
+// A picture posted with an update or a comment is fetched once and kept while the page is
+// open, since the address the board gives for it only lasts a few minutes.
+const imageAddresses = new Map(); // attachment id → a promise of an address the page can show
+function imageAddress(id) {
+  if (!imageAddresses.has(id)) {
+    const address = state.store.fileUrl(id, false).then((url) => (url.startsWith("blob:") ? url : fetch(url).then((res) => {
+      if (!res.ok) throw new Error(`Image failed (${res.status})`);
+      return res.blob();
+    }).then((blob) => URL.createObjectURL(blob))));
+    address.catch(() => imageAddresses.delete(id)); // so it's tried again the next time it's shown
+    imageAddresses.set(id, address);
+  }
+  return imageAddresses.get(id);
+}
+
+// The images on an update or a comment, as small pictures. Pressing one opens it full size.
+const imagesOnUpdate = (task, entry) => (task.attachments || []).filter((a) => a.kind === "image" && a.update_at && stampKey(a.update_at) === stampKey(entry.at));
+const imagesOnComment = (task, comment) => (task.attachments || []).filter((a) => a.kind === "image" && a.comment_id === comment.id);
+function postImages(images) {
+  if (!images.length) return null;
+  return el("span", { class: "post-images" }, ...images.map((a) => {
+    const img = el("img", { alt: a.title, loading: "lazy" });
+    const button = el("button", { class: "post-image", type: "button", "data-image": a.id, "data-mime": a.mime || "", title: a.title }, img);
+    imageAddress(a.id).then((url) => { img.src = url; }, () => {
+      button.classList.add("is-missing");
+      button.textContent = "Image unavailable";
+    });
+    return button;
+  }));
 }
 
 // ---------- Editing or deleting your own update or comment ----------
@@ -2370,8 +2489,20 @@ function editedMark(editedAt) {
   return el("span", { class: "activity-edited", "data-edited": true, title: `Edited ${when}` }, "edited");
 }
 
+// On an update that came from a meeting's notes: a tag saying so, and the meeting, which
+// opens from here while it's still on the calendar and this person can see it.
+function meetingTag(entry) {
+  if (!entry.meeting) return null;
+  const meeting = findMeeting(entry.meeting.id);
+  return el("span", { class: "post-from" },
+    el("span", { class: "post-tag" }, "Meeting Notes"),
+    meeting
+      ? el("button", { class: "link-btn", type: "button", "data-open-meeting": meeting.id }, meeting.title)
+      : el("span", { class: "win-meta" }, entry.meeting.title || ""));
+}
+
 // Edit and Delete, on what this person posted themselves. `key` says which one: an
-// update's moment, or a comment's id.
+// update's moment, or a comment's or a note's id.
 function ownActions(kind, key) {
   return el("span", { class: "own-actions" },
     el("button", { class: "link-btn", type: "button", "data-edit-own": kind, "data-key": key }, "Edit"),
@@ -2409,7 +2540,7 @@ function stopOwnEdit(w) {
 // Why the board wouldn't change or delete an update or a comment, in words.
 function ownPostError(error, kind, done) {
   if (error?.code === "not_author") return `Only whoever posted that ${kind} can change it.`;
-  if (error?.code === "update_not_found" || error?.code === "comment_not_found") return `That ${kind} is no longer there.`;
+  if (["update_not_found", "comment_not_found", "note_not_found"].includes(error?.code)) return `That ${kind} is no longer there.`;
   return `That ${kind} wasn't ${done}. Check your connection and try again.`;
 }
 
@@ -2447,8 +2578,14 @@ async function deleteOwnPost(w, button) {
   button.disabled = false;
   if (!w.root.isConnected) return;
   if (!result.ok) return showWindowError(w, ownPostError(result.error, kind, "deleted"));
-  // Gone at once, rather than when the next read arrives.
+  // Gone at once, rather than when the next read arrives. Its images go with it, and are
+  // taken out of storage as a removed file is.
   const task = findTask(w.taskId);
+  const itsImage = (a) => a.kind === "image" && (kind === "update" ? !!a.update_at && stampKey(a.update_at) === stampKey(key) : a.comment_id === key);
+  if (task?.attachments?.some(itsImage)) {
+    task.attachments = task.attachments.filter((a) => !itsImage(a));
+    state.store.cleanFiles().catch(() => { /* retried by the next removal */ });
+  }
   if (task && kind === "update") {
     task.updates = (task.updates || []).filter((u) => !(u.kind === "note" && stampKey(u.at) === stampKey(key)));
     task.likes = (task.likes || []).filter((l) => stampKey(l.at) !== stampKey(key));
@@ -2521,11 +2658,11 @@ function buildTaskWindow(w, task) {
         el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
     // Where the task stands, as the people working on it post it. Typing @ mentions someone.
     taskFold("updates", ["Updates"],
-      mentionForm({ name: "update", placeholder: "Add an update. Type @ to mention someone", label: "New update", button: "Post", maxlength: "1000" }),
+      mentionForm({ name: "update", placeholder: "Add an update. Type @ to mention, or paste an image", label: "New update", button: "Post", maxlength: "1000", images: true }),
       el("ul", { class: "activity-list", "data-list": "updates" })),
     // What people say about it. Typing @ mentions someone, who is then told.
     taskFold("comments", ["Comments", count("comments")],
-      mentionForm({ name: "comment", placeholder: "Write a comment. Type @ to mention someone", label: "New comment", button: "Comment", maxlength: "2000" }),
+      mentionForm({ name: "comment", placeholder: "Write a comment. Type @ to mention, or paste an image", label: "New comment", button: "Comment", maxlength: "2000", images: true }),
       el("ul", { class: "activity-list comment-list", "data-list": "comments" })),
     // The meetings set for this task, and a way to set another without leaving it.
     // Meetings, files and links are declared on the task. A subtask has these two sections
@@ -2719,14 +2856,15 @@ function renderTaskWindow(w) {
   // everything the board has kept for this task: those notes and every change, newest first.
   const entries = [...(task.updates || [])].reverse();
   const notes = entries.filter((entry) => entry.kind === "note");
-  const entrySignature = (entry) => [entry.at, entry.by, entry.kind, entry.text, entry.mentions, entry.edited_at, timeAgo(entry.at), state.name];
+  const entrySignature = (entry) => [entry.at, entry.by, entry.kind, entry.text, entry.mentions, entry.edited_at, timeAgo(entry.at), state.name,
+    entry.meeting && [entry.meeting.id, findMeeting(entry.meeting.id)?.title ?? entry.meeting.title]];
   // How long ago, with the exact day and time on hover.
   const when = (entry) => el("span", { class: "activity-time", title: new Date(entry.at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }, timeAgo(entry.at));
   // Whoever posted an update or wrote a comment can edit it or delete it. While one is
   // being edited its list is left as it is, so the box isn't lost when the board refreshes.
   const mine = (name) => personKey(name) === personKey(state.name);
   const editingUpdate = (entry) => w.editing?.list === "updates" && stampKey(w.editing.key) === stampKey(entry.at);
-  renderList(w, "updates", w.editing?.list === "updates" ? ["editing", w.editing.key] : notes.map((entry) => [...entrySignature(entry), likesOf(task, entry)]), () =>
+  renderList(w, "updates", w.editing?.list === "updates" ? ["editing", w.editing.key] : notes.map((entry) => [...entrySignature(entry), likesOf(task, entry), imagesOnUpdate(task, entry).map((a) => a.id)]), () =>
     notes.length ? notes.map((entry) => (editingUpdate(entry)
       ? el("li", { class: "is-editing", "data-update": entry.at }, ownEditForm("update", entry.at, entry.text))
       : el("li", { "data-update": entry.at },
@@ -2734,8 +2872,11 @@ function renderTaskWindow(w) {
         el("span", { class: "activity-time" }, timeAgo(entry.at)),
         editedMark(entry.edited_at),
         mine(entry.by) && ownActions("update", entry.at),
+        // One that came from a meeting's notes says so.
+        meetingTag(entry),
         // The people an update mentions stand out, as they do in a comment.
         el("span", { class: "activity-note" }, ...commentBody({ body: entry.text, mentions: entry.mentions })),
+        postImages(imagesOnUpdate(task, entry)),
         // A way to say it's been seen, and who has.
         likeRow(task, entry)))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
   // A task carries its latest fifty entries, and the board keeps every one. When there are
@@ -2751,7 +2892,8 @@ function renderTaskWindow(w) {
   setCount(w, "history", total ? String(total) : "");
   renderList(w, "history", [listed.map(entrySignature), earlier, !!w.historyFailed], () => (listed.length ? [
     ...listed.map((entry) => (entry.kind === "note"
-      ? el("li", { class: "activity-posted" }, `${entry.by} posted an update `, when(entry), editedMark(entry.edited_at), el("span", { class: "activity-note" }, `“${entry.text}”`))
+      ? el("li", { class: "activity-posted" }, `${entry.by} posted an update `, when(entry), editedMark(entry.edited_at),
+        entry.meeting && el("span", { class: "post-tag post-tag-inline" }, "Meeting Notes"), el("span", { class: "activity-note" }, `“${entry.text}”`))
       : el("li", { class: "activity-system" }, `${entry.by} ${entry.text} `, when(entry)))),
     earlier > 0 && el("li", { class: "win-empty", "data-history-more": true }, w.historyFailed
       ? `The ${earlier} earlier ${earlier === 1 ? "entry" : "entries"} couldn't be loaded. Check your connection, then fold this section and open it again.`
@@ -2762,7 +2904,7 @@ function renderTaskWindow(w) {
   const comments = [...(task.comments || [])].reverse();
   setCount(w, "comments", comments.length ? String(comments.length) : "");
   const editingComment = (c) => w.editing?.list === "comments" && w.editing.key === c.id;
-  renderList(w, "comments", w.editing?.list === "comments" ? ["editing", w.editing.key] : comments.map((c) => [c.id, c.body, c.mentions, c.created_by, c.edited_at, timeAgo(c.created_at), state.name]), () =>
+  renderList(w, "comments", w.editing?.list === "comments" ? ["editing", w.editing.key] : comments.map((c) => [c.id, c.body, c.mentions, c.created_by, c.edited_at, timeAgo(c.created_at), state.name, imagesOnComment(task, c).map((a) => a.id)]), () =>
     comments.length ? comments.map((c) => (editingComment(c)
       ? el("li", { class: "is-editing", "data-comment": c.id }, ownEditForm("comment", c.id, c.body))
       : el("li", { "data-comment": c.id },
@@ -2770,9 +2912,12 @@ function renderTaskWindow(w) {
         el("span", { class: "activity-time" }, timeAgo(c.created_at)),
         editedMark(c.edited_at),
         mine(c.created_by) && ownActions("comment", c.id),
-        el("span", { class: "activity-note" }, ...commentBody(c))))) : [el("li", { class: "win-empty" }, "No comments yet.")]);
+        el("span", { class: "activity-note" }, ...commentBody(c)),
+        postImages(imagesOnComment(task, c))))) : [el("li", { class: "win-empty" }, "No comments yet.")]);
 
-  const attachments = task.attachments || [];
+  // What's attached to the task itself. An image pasted into an update or a comment is kept
+  // the same way, but belongs to that update or comment and shows there.
+  const attachments = (task.attachments || []).filter((a) => a.kind !== "image");
   // Meetings, files and links are declared on the task. A subtask shows those sections
   // only while it still has some that were put on it earlier.
   if (task.parent_id) {
@@ -2867,15 +3012,13 @@ async function onWindowSubmit(w, event) {
     failure = "That subtask didn't save. Check your connection and try again.";
     focusAfter = input("title");
   } else if (form.dataset.form === "update") {
-    const text = input("text").value.trim();
-    if (!text) return input("text").focus();
-    action = () => state.store.addUpdate(w.taskId, text, mentionsIn(text));
+    action = postingWithImages(w, form, (text, images) => state.store.addUpdate(w.taskId, text, mentionsIn(text), images));
+    if (!action) return input("text").focus();
     failure = "That update didn't post. Check your connection and try again.";
     focusAfter = input("text");
   } else if (form.dataset.form === "comment") {
-    const text = input("text").value.trim();
-    if (!text) return input("text").focus();
-    action = () => state.store.addComment(w.taskId, text, mentionsIn(text));
+    action = postingWithImages(w, form, (text, images) => state.store.addComment(w.taskId, text, mentionsIn(text), images));
+    if (!action) return input("text").focus();
     failure = "That comment didn't post. Check your connection and try again.";
     focusAfter = input("text");
   } else if (form.dataset.form === "edit-update" || form.dataset.form === "edit-comment") {
@@ -2901,7 +3044,13 @@ async function onWindowSubmit(w, event) {
     showWindowError(w, null);
     focusAfter.focus();
   } else {
-    showWindowError(w, failure);
+    // The board checks an image as the page does, so these only show if something slipped past.
+    const imageProblem = {
+      invalid_image: "Only PNG, JPEG, GIF or WebP images can be posted.",
+      image_too_large: "One of those images is too large. Images can be up to 10 MB.",
+      too_many_images: "Six images is the most for one post.",
+    }[result.error?.code];
+    showWindowError(w, imageProblem || failure);
   }
 }
 
@@ -2911,6 +3060,8 @@ function onWindowClick(w, event) {
   if (remind) return openReminder(remind.dataset.remind);
   const like = target.closest("[data-like]");
   if (like) return likeUpdate(w, like);
+  const image = target.closest("[data-image]");
+  if (image) return openFile(w, image.dataset.image, image.dataset.mime);
   const editOwn = target.closest("[data-edit-own]");
   if (editOwn) return startOwnEdit(w, editOwn.dataset.editOwn, editOwn.dataset.key);
   if (target.closest("[data-cancel-edit]")) return stopOwnEdit(w);
@@ -3667,7 +3818,7 @@ function openMeeting(id) {
   if (!w) {
     w = createWindow(key, meeting.title);
     w.meetingId = id;
-    w.height = Math.min(w.height, 540);
+    w.height = Math.min(w.height, 620);
     placeWindow(w);
     buildMeetingWindow(w);
     renderMeetingWindow(w);
@@ -3691,9 +3842,23 @@ function buildMeetingWindow(w) {
       el("form", { class: "win-form", "data-form": "add-person", novalidate: true },
         textInput({ maxlength: "60", list: "people-list", placeholder: "Add a name", "aria-label": "Person to add", "data-input": "name" }),
         el("button", { class: "btn btn-quiet", type: "submit" }, "Add person"))),
+    // What was said and decided, as the people in the meeting write it down. Separate from
+    // the Notes the meeting was set with, which say what it's about.
+    section("Meeting notes",
+      el("p", { class: "hint", "data-notes-hint": true, hidden: true }),
+      el("ul", { class: "activity-list note-list", "data-list": "notes" }),
+      el("form", { class: "win-form", "data-form": "add-note", novalidate: true },
+        textInput({ maxlength: "1000", placeholder: "Add a note from the meeting", "aria-label": "New meeting note", "data-input": "note" }),
+        el("button", { class: "btn btn-primary", type: "submit" }, "Add note"))),
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
     el("div", { class: "meeting-actions", "data-list": "actions" }));
-  w.body.addEventListener("submit", (event) => addMeetingPerson(w, event));
+  w.body.querySelector('[data-list="notes"]').closest("section").dataset.notesSection = "";
+  w.body.addEventListener("submit", (event) => {
+    const form = event.target.dataset.form;
+    if (form === "add-note") return addMeetingNote(w, event);
+    if (form === "edit-note") return saveMeetingNote(w, event);
+    return addMeetingPerson(w, event);
+  });
   w.body.addEventListener("click", (event) => onMeetingClick(w, event));
 }
 
@@ -3764,6 +3929,26 @@ function renderMeetingWindow(w) {
   ]);
   w.body.querySelector('[data-form="add-person"]').hidden = !(organizer || mine) || done;
 
+  // Its notes, oldest first, as a record of the meeting. The people in it can add one,
+  // completed or not, and whoever wrote one can edit or delete it. While one is being
+  // edited the list is left as it is, as a task's updates are.
+  const inIt = organizer || !!mine;
+  const posted = m.meeting_notes || [];
+  const hint = w.body.querySelector("[data-notes-hint]");
+  hint.hidden = !task || !inIt;
+  hint.textContent = task ? `Notes also go to the updates of ${task.title}, tagged Meeting Notes.` : "";
+  renderList(w, "notes", w.editingNote ? ["editing", w.editingNote] : posted.map((n) => [n.id, n.body, n.created_by, n.edited_at, n.on_task, timeAgo(n.created_at), state.name]), () =>
+    posted.length ? posted.map((n) => (w.editingNote === n.id
+      ? el("li", { class: "is-editing", "data-note": n.id }, noteEditForm(n))
+      : el("li", { "data-note": n.id },
+        el("strong", {}, n.created_by), " ",
+        el("span", { class: "activity-time" }, timeAgo(n.created_at)),
+        editedMark(n.edited_at),
+        personKey(n.created_by) === personKey(state.name) && ownActions("note", n.id),
+        el("span", { class: "activity-note" }, n.body),
+        n.on_task && el("span", { class: "win-meta note-on-task", "data-on-task": true }, "Also in the task's updates")))) : [el("li", { class: "win-empty" }, "No notes yet.")]);
+  w.body.querySelector('[data-form="add-note"]').hidden = !inIt;
+
   // A completed meeting has nothing left to answer. Whoever set it can reopen it.
   renderList(w, "actions", [organizer, mine?.answer, done], () => [
     !done && mine?.answer === "waiting" && el("button", { class: "btn btn-accept", type: "button", "data-answer": "accepted" }, "Accept"),
@@ -3790,10 +3975,112 @@ function onMeetingClick(w, event) {
   if (remove) return removeMeetingPerson(w, remove);
   if (target.closest("[data-edit-meeting]")) return openMeetingForm({ meeting: findMeeting(w.meetingId) });
   if (target.closest("[data-reschedule-meeting]")) return openReschedule(w.meetingId);
+  const editNote = target.closest('[data-edit-own="note"]');
+  if (editNote) return startNoteEdit(w, editNote.dataset.key);
+  if (target.closest("[data-cancel-edit]")) return stopNoteEdit(w);
+  const deleteNote = target.closest('[data-delete-own="note"]');
+  if (deleteNote) return deleteMeetingNote(w, deleteNote);
   const cancel = target.closest("[data-cancel-meeting]");
   if (cancel) return cancelMeeting(w, cancel);
   const complete = target.closest("[data-complete-meeting], [data-reopen-meeting]");
   if (complete) return completeMeeting(w, complete, complete.hasAttribute("data-complete-meeting"));
+}
+
+// ---------- A meeting's notes ----------
+
+// The box a note is edited in, with its words in it. Esc gives up the edit.
+function noteEditForm(note) {
+  const input = textInput({ maxlength: "1000", "aria-label": "Edit your note", "data-input": "text" });
+  input.value = note.body;
+  const cancel = el("button", { class: "btn btn-quiet", type: "button", "data-cancel-edit": true }, "Cancel");
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation(); // Esc here gives up the edit, not the whole window
+    cancel.click();
+  });
+  const form = el("form", { class: "win-form", "data-form": "edit-note", novalidate: true },
+    input, el("button", { class: "btn btn-primary", type: "submit" }, "Save"), cancel);
+  form.dataset.key = note.id;
+  return form;
+}
+
+function startNoteEdit(w, id) {
+  w.editingNote = id;
+  showWindowError(w, null);
+  renderMeetingWindow(w);
+  const box = w.body.querySelector('[data-form="edit-note"] [data-input="text"]');
+  if (!box) return;
+  box.focus();
+  box.setSelectionRange(box.value.length, box.value.length);
+}
+
+function stopNoteEdit(w) {
+  const was = w.editingNote;
+  w.editingNote = null;
+  showWindowError(w, null);
+  renderMeetingWindow(w);
+  if (was) [...w.body.querySelectorAll('[data-edit-own="note"]')].find((b) => b.dataset.key === was)?.focus();
+}
+
+// A note goes on the meeting, and when the meeting is for a task it's posted as an update
+// on that task too. The board does both; the page shows the note at once.
+async function addMeetingNote(w, event) {
+  event.preventDefault();
+  const form = event.target;
+  const input = form.querySelector('[data-input="note"]');
+  const body = input.value.trim();
+  if (!body) return input.focus();
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  const result = await write(() => state.store.addMeetingNote(w.meetingId, body), null);
+  button.disabled = false;
+  if (!w.root.isConnected) return;
+  if (!result.ok) {
+    return showWindowError(w, result.error?.code === "not_in_meeting" ? "Only the people in this meeting can add notes to it." : "That note wasn't added. Check your connection and try again.");
+  }
+  const meeting = findMeeting(w.meetingId);
+  const note = result.result;
+  if (meeting && note && !(meeting.meeting_notes || []).some((n) => n.id === note.id)) meeting.meeting_notes = [...(meeting.meeting_notes || []), note];
+  form.reset();
+  showWindowError(w, null);
+  renderMeetingWindow(w);
+  input.focus();
+}
+
+async function saveMeetingNote(w, event) {
+  event.preventDefault();
+  const form = event.target;
+  const id = form.dataset.key;
+  const box = form.querySelector('[data-input="text"]');
+  const text = box.value.trim();
+  if (!text) return box.focus();
+  const note = (findMeeting(w.meetingId)?.meeting_notes || []).find((n) => n.id === id);
+  // The same words: there's nothing to save.
+  if (note && note.body === text) return stopNoteEdit(w);
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true;
+  const result = await write(() => state.store.editMeetingNote(id, text), null);
+  button.disabled = false;
+  if (!w.root.isConnected) return;
+  if (!result.ok) return showWindowError(w, ownPostError(result.error, "note", "saved"));
+  if (note) Object.assign(note, { body: text, edited_at: new Date().toISOString() });
+  stopNoteEdit(w);
+}
+
+// Deleting takes a second press. A note that's also an update on a task goes from there too.
+async function deleteMeetingNote(w, button) {
+  const id = button.dataset.key;
+  if (!armButton(button, "Confirm?", "Delete")) return;
+  button.disabled = true;
+  const result = await write(() => state.store.deleteMeetingNote(id), null);
+  button.disabled = false;
+  if (!w.root.isConnected) return;
+  if (!result.ok) return showWindowError(w, ownPostError(result.error, "note", "deleted"));
+  const meeting = findMeeting(w.meetingId);
+  if (meeting) meeting.meeting_notes = (meeting.meeting_notes || []).filter((n) => n.id !== id);
+  showWindowError(w, null);
+  renderMeetingWindow(w);
 }
 
 // Completing a meeting takes it out of what's waiting for an answer and out of My meetings,
@@ -4252,8 +4539,108 @@ function workload() {
   return { open, cards: nobody.length ? [...people, entry("", "Unassigned", nobody, 0)] : people };
 }
 
+// ---------- People: your own subtasks ----------
+
+// The People page has two tabs: everyone's workload, and this person's own subtasks. The
+// tab last used is the one it opens on next time, on this device.
+const PEOPLE_VIEW_KEY = "board.peopleView";
+state.peopleView = readStorage("localStorage", PEOPLE_VIEW_KEY) === "subtasks" ? "subtasks" : "load";
+
+function setPeopleView(view) {
+  state.peopleView = view;
+  writeStorage("localStorage", PEOPLE_VIEW_KEY, view === "subtasks" ? "subtasks" : null);
+  renderPeoplePage();
+}
+
+$("people-tab-load").addEventListener("click", () => setPeopleView("load"));
+$("people-tab-subtasks").addEventListener("click", () => setPeopleView("subtasks"));
+
+// Every subtask assigned to this person, in every project: what's still to do under the
+// project and the task it belongs to, in the board's order, and what's done folded away.
+function renderMySubtasks() {
+  const me = personKey(state.name);
+  const mine = tasksInOrder().filter((t) => t.parent_id && t.assignees.some((name) => personKey(name) === me));
+  const pending = mine.filter((t) => t.status !== "done");
+  const done = mine.filter((t) => t.status === "done");
+  const overdue = pending.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
+  const today = pending.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
+  $("people-summary").textContent = [`${pending.length} pending`, overdue && `${overdue} overdue`, today && `${today} due today`].filter(Boolean).join(" · ");
+
+  // What each subtask shows, grouped by project, then by the task it's part of.
+  const grouped = (subtasks) => {
+    const projects = [];
+    for (const s of subtasks) {
+      const parent = findTask(s.parent_id);
+      const projectId = parent?.project_id ?? s.project_id ?? "";
+      let project = projects.find((p) => p.id === projectId);
+      if (!project) projects.push(project = { id: projectId, name: state.projects.find((p) => p.id === projectId)?.name || "No project", tasks: [] });
+      let task = project.tasks.find((t) => t.id === s.parent_id);
+      if (!task) project.tasks.push(task = { id: s.parent_id, title: parent?.title || "", about: parent ? [assigneeText(parent), STATUS[parent.status]].filter(Boolean).join(" · ") : "", subtasks: [] });
+      const reminder = myReminder(s.id);
+      task.subtasks.push({
+        id: s.id, title: s.title, urgency: s.urgency, done: s.status === "done",
+        // On a subtask several people are on, whether this person is the main or supporting, and whom.
+        about: [roleOn(s, me), STATUS[s.status], `${s.progress}%`].filter(Boolean).join(" · "),
+        due: s.status === "done" ? null : deadlineNote(s),
+        reminder: reminder ? reminderWhen(reminder) : null,
+      });
+    }
+    return projects;
+  };
+  const view = { pending: grouped(pending), done: grouped(done), doneCount: done.length };
+
+  // Only rebuilds when something shows differently, so the Done group and keyboard focus survive a refresh.
+  const box = $("my-subtasks");
+  const signature = JSON.stringify(view);
+  if (box.dataset.sig === signature) return;
+  const doneOpen = !!box.querySelector(".mine-done")?.open;
+  box.dataset.sig = signature;
+  const groups = (projects) => projects.map((project) => el("section", { class: "subtask-group", "data-subtask-project": project.id },
+    el("h2", { class: "subtask-project" }, project.name),
+    ...project.tasks.map((task) => el("div", { class: "subtask-task", "data-subtask-task": task.id },
+      el("p", { class: "subtask-parent" }, "In ",
+        el("button", { class: "link-btn", type: "button", "data-open-task": task.id }, task.title), " ",
+        el("span", { class: "win-meta" }, task.about)),
+      el("ul", { class: "win-list subtask-list" }, ...task.subtasks.map((s) => el("li", { class: "win-item", "data-subtask": s.id },
+        el("input", { type: "checkbox", "data-done": s.id, checked: s.done, "aria-label": `Mark ${s.title} done` }),
+        el("span", { class: `dot dot-${s.urgency}`, role: "img", "aria-label": `${URGENCY[s.urgency]} urgency`, title: `${URGENCY[s.urgency]} urgency` }),
+        el("span", { class: "win-item-main" },
+          el("button", { class: `link-btn${s.done ? " subtask-done" : ""}`, type: "button", "data-open-task": s.id }, s.title)),
+        el("span", { class: "win-meta" }, s.about),
+        s.due && el("span", { class: `due-note due-${s.due.tone}` }, s.due.text),
+        !s.done && reminderButton(findTask(s.id)))))))));
+  box.replaceChildren(...[
+    el("p", { class: "hint my-subtasks-hint" }, "The subtasks assigned to you, in every project. Tick one when it's done."),
+    ...(view.pending.length
+      ? groups(view.pending)
+      : [el("p", { class: "win-empty" }, done.length ? "Nothing pending." : "You have no subtasks. One shows here once it's assigned to you.")]),
+    done.length > 0 && el("details", { class: "mine-done", open: doneOpen },
+      el("summary", {}, `Done (${done.length})`),
+      ...groups(view.done)),
+  ].filter(Boolean));
+}
+
+$("my-subtasks").addEventListener("click", (event) => {
+  const remind = event.target.closest("[data-remind]");
+  if (remind) return openReminder(remind.dataset.remind);
+  const task = event.target.closest("[data-open-task]");
+  if (task) openTask(task.dataset.openTask);
+});
+$("my-subtasks").addEventListener("change", (event) => {
+  const box = event.target.closest("[data-done]");
+  if (box) updateTask(box.dataset.done, { status: box.checked ? "done" : "todo" });
+});
+
 function renderPeoplePage() {
   if ($("people-view").hidden) return;
+  // The workload and the subtasks share the page: one shows, and the workload's key goes with it.
+  const listing = state.peopleView === "subtasks";
+  $("people-tab-load").setAttribute("aria-pressed", String(!listing));
+  $("people-tab-subtasks").setAttribute("aria-pressed", String(listing));
+  $("my-subtasks").hidden = !listing;
+  $("people-cards").hidden = listing;
+  document.querySelector(".people-hint").hidden = listing;
+  if (listing) return renderMySubtasks();
   const { open, cards } = workload();
   const urgent = open.filter((t) => t.urgency === "critical" || t.urgency === "high").length;
   const unassigned = open.filter((t) => !t.assignees.length).length;

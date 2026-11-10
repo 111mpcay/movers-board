@@ -769,6 +769,19 @@ body::before {
 .person-task-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .person-task-main .win-meta { margin-left: 4px; font-size: 0.78rem; }
 .person-none { padding: 6px 0 0; }
+/* People, the Subtasks tab: this person's own subtasks, each under its project and the task
+   it's part of, with a box to tick when it's done. */
+.my-subtasks { max-width: 760px; }
+.my-subtasks-hint { margin: -8px 0 12px; }
+.subtask-group + .subtask-group { margin-top: 16px; }
+.subtask-project { margin-bottom: 6px; font: 700 1rem/1.3 var(--font-display); letter-spacing: 0.01em; overflow-wrap: anywhere; }
+.subtask-task { padding: 8px 12px 2px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+.subtask-task + .subtask-task { margin-top: 8px; }
+.subtask-parent { font-size: 0.84rem; color: var(--muted); overflow-wrap: anywhere; }
+.subtask-list .win-item:last-child { border-bottom: 0; }
+.subtask-list .win-item input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--orange); cursor: pointer; }
+.subtask-list .win-item .dot { flex: none; width: 8px; height: 8px; box-shadow: none; }
+.my-subtasks .mine-done .subtask-group { margin-top: 8px; }
 /* Too narrow for one line: the bar drops under the name and the numbers. */
 @media (max-width: 700px) {
   .person-head { grid-template-columns: minmax(0, 1fr) auto; padding: 8px 12px; }
@@ -1324,6 +1337,24 @@ body::before {
 .activity-edited { margin-left: 6px; color: var(--muted); font-size: 0.8rem; }
 .activity-edited::before { content: "· "; }
 .activity-list .is-editing .win-form { margin-top: 0; }
+/* An update that came from a meeting's notes is tagged, with the meeting it came from. */
+.post-from { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin-top: 3px; font-size: 0.8rem; }
+.post-tag { padding: 1px 8px; font-size: 0.72rem; font-weight: 700; color: var(--on-navy); background: var(--navy); border-radius: 9px; white-space: nowrap; }
+.post-tag-inline { margin-left: 6px; }
+/* Images pasted into a box wait under it until it's posted. On an update or a comment
+   they show as small pictures, which open the full image. */
+.paste-tray { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 6px; list-style: none; }
+.paste-item { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 4px 3px 3px; font-size: 0.8rem; background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; }
+.paste-item img { flex: none; width: 34px; height: 34px; object-fit: cover; border-radius: 4px; }
+.paste-name { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.paste-note { flex: 1 1 100%; font-size: 0.82rem; color: var(--danger); }
+.post-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.post-image { min-width: 60px; min-height: 60px; padding: 0; font-size: 0.78rem; line-height: 0; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; cursor: zoom-in; }
+.post-image img { display: block; width: auto; max-width: 200px; height: 110px; object-fit: cover; }
+.post-image.is-missing { padding: 6px 10px; line-height: 1.3; cursor: default; }
+/* A meeting's notes, in its window */
+.note-list > li:not(.win-empty) { padding: 8px 10px; background: var(--surface-2); border-radius: 6px; }
+.note-on-task { display: block; margin-top: 2px; }
 
 /* Under an update: an Acknowledge button, and who has acknowledged it. Lit once this person has. */
 .like-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin-top: 6px; }
