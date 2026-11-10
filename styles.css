@@ -719,10 +719,11 @@ body::before {
 .project-percent { flex: none; font-size: 0.86rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* Sections in the top bar */
-.topnav { display: flex; gap: 14px; }
+.topnav { display: flex; flex-wrap: wrap; gap: 2px 14px; }
 .topnav-link {
   padding: 2px 1px;
   font-weight: 600;
+  white-space: nowrap;
   color: var(--muted);
   text-decoration: none;
   border-bottom: 2px solid transparent;
@@ -835,6 +836,35 @@ body::before {
   .person-figures { grid-column: 2; }
   .load-bar { grid-column: 1 / -1; grid-row: 2; height: 4px; }
   .person-task-main .win-meta { display: block; margin-left: 0; }
+}
+
+/* Movers Code: the seven codes, one card each, its number on navy as on the task sheet.
+   A code opens in place to show what it means. One not written yet is a dashed, quiet slot. */
+.code-hint { margin: -8px 0 12px; font-size: 0.88rem; color: var(--muted); }
+.code-list { display: grid; gap: 10px; max-width: 760px; margin: 0; padding: 0; list-style: none; }
+.code-item { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.code-head { display: grid; grid-template-columns: 54px minmax(0, 1fr) auto; align-items: stretch; min-height: 56px; list-style: none; }
+.code-head::-webkit-details-marker { display: none; }
+summary.code-head { cursor: pointer; }
+summary.code-head:hover { background: var(--surface-2); }
+summary.code-head:focus-visible { outline-offset: -2px; border-radius: 8px; }
+.code-num { display: grid; place-items: center; font: 700 1.7rem/1 var(--font-display); color: var(--on-navy); background: var(--navy); }
+.code-title { align-self: center; padding: 12px 14px; font: 700 1.3rem/1.25 var(--font-display); letter-spacing: 0.01em; overflow-wrap: anywhere; }
+/* "Code 3:" is said by a screen reader, where the big number can't be seen. */
+.code-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.code-toggle { align-self: center; padding-right: 14px; }
+.code-toggle::before { content: "▸"; display: inline-block; color: var(--muted); transition: transform 0.12s; }
+.code-item[open] .code-toggle::before { transform: rotate(90deg); }
+.code-body { padding: 12px 16px 14px 68px; background: var(--surface-2); border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+.code-body p + p { margin-top: 8px; }
+.code-pending { color: var(--muted); }
+.code-item.is-empty { background: none; border-style: dashed; }
+.code-item.is-empty .code-num { color: var(--muted); background: none; border-right: 1px dashed var(--line); }
+.code-item.is-empty .code-title { font-size: 1.1rem; font-weight: 600; color: var(--muted); }
+@media (max-width: 700px) {
+  .code-head { grid-template-columns: 46px minmax(0, 1fr) auto; }
+  .code-title { font-size: 1.2rem; }
+  .code-body { padding-left: 16px; }
 }
 
 /* The calendar: people down the side, days across the top, as on the task sheet */

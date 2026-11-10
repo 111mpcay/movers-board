@@ -601,6 +601,7 @@ function routeProjectId() {
 
 const onCalendar = () => location.hash === "#calendar";
 const onPeople = () => location.hash === "#people";
+const onCode = () => location.hash === "#code";
 
 function deletedNote(id, fallback) {
   const gone = state.deleted.find((d) => d.item_id === id);
@@ -618,17 +619,20 @@ function syncRoute() {
   state.projectId = exists ? id : null;
   const calendar = onCalendar();
   const people = onPeople();
+  const code = onCode();
   // Coming to the Calendar from another page shows the week, whatever it showed last.
   if (calendar && $("calendar-view").hidden) state.calendarView = "week";
   $("calendar-view").hidden = !calendar;
   $("people-view").hidden = !people;
-  $("projects-view").hidden = calendar || people || !!state.projectId;
+  $("code-view").hidden = !code;
+  $("projects-view").hidden = calendar || people || code || !!state.projectId;
   $("project-view").hidden = !state.projectId;
   $("add-btn").hidden = !state.projectId;
   $("set-meeting-btn").hidden = !calendar;
-  $("nav-projects").classList.toggle("is-current", !calendar && !people);
+  $("nav-projects").classList.toggle("is-current", !calendar && !people && !code);
   $("nav-calendar").classList.toggle("is-current", calendar);
   $("nav-people").classList.toggle("is-current", people);
+  $("nav-code").classList.toggle("is-current", code);
 }
 
 function projectPercent(id) {
@@ -684,7 +688,7 @@ function archivedNote(project) {
 
 function renderProjectPage() {
   const project = state.projects.find((p) => p.id === state.projectId);
-  document.title = project ? `${project.name} · Movers Board` : onCalendar() ? "Calendar · Movers Board" : onPeople() ? "People · Movers Board" : "Movers Board";
+  document.title = project ? `${project.name} · Movers Board` : onCalendar() ? "Calendar · Movers Board" : onPeople() ? "People · Movers Board" : onCode() ? "Movers Code · Movers Board" : "Movers Board";
   if (!project) return;
   const percent = projectPercent(project.id);
   $("project-title").textContent = project.name;
@@ -1240,6 +1244,7 @@ function renderBoard() {
   renderCalendarCount();
   renderCalendar();
   renderPeoplePage();
+  renderCodePage();
   renderToday();
   renderNotifications();
 }
@@ -5291,6 +5296,53 @@ $("people-cards").addEventListener("toggle", (event) => {
   if (card.open) state.peopleOpen.add(card.dataset.personCard);
   else state.peopleOpen.delete(card.dataset.personCard);
 }, true);
+
+// ---------- Movers Code ----------
+
+// The seven codes of Movers, in order: 1 at the top, 7 at the bottom. This list is the one
+// place their words live, so it's the only thing to change when a code or a description is
+// written.
+//   title:       the code itself, exactly as it should read. Left empty, the page shows that
+//                number as a "Coming soon" slot.
+//   description: what shows when the code is clicked. Left empty, it says "Description
+//                coming soon." A blank line inside it starts a new paragraph.
+const MOVERS_CODE = [
+  { title: "We Make Things Happen. No Matter What", description: "" },
+  { title: "We do Everything with Logic. Everything.", description: "" },
+  { title: "We Never Assume. We Validate with Data.", description: "" },
+  { title: "", description: "" },
+  { title: "", description: "" },
+  { title: "", description: "" },
+  { title: "", description: "" },
+];
+
+// The words never change while the page is open, so the list is drawn once and an opened
+// code stays open through the board's refreshes.
+function renderCodePage() {
+  const list = $("code-list");
+  if ($("code-view").hidden || list.dataset.drawn) return;
+  list.dataset.drawn = "1";
+  const codes = MOVERS_CODE.map((code, i) => ({ number: i + 1, title: code.title.trim(), paragraphs: code.description.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean) }));
+  const written = codes.filter((c) => c.title).length;
+  const coming = codes.length - written;
+  $("code-summary").textContent = coming ? `${written} of ${codes.length} written · ${coming} still to come` : "";
+  list.replaceChildren(...codes.map((c) => el("li", {},
+    c.title
+      // A code opens in place, with a click, a tap, or Enter or Space from the keyboard.
+      ? el("details", { class: "code-item" },
+        el("summary", { class: "code-head" },
+          el("span", { class: "code-num", "aria-hidden": "true" }, String(c.number)),
+          el("span", { class: "code-title" }, el("span", { class: "code-label" }, `Code ${c.number}: `), c.title),
+          el("span", { class: "code-toggle", "aria-hidden": "true" })),
+        el("div", { class: "code-body" },
+          ...(c.paragraphs.length
+            ? c.paragraphs.map((text) => el("p", {}, text))
+            : [el("p", { class: "code-pending" }, "Description coming soon.")])))
+      : el("div", { class: "code-item is-empty" },
+        el("div", { class: "code-head" },
+          el("span", { class: "code-num", "aria-hidden": "true" }, String(c.number)),
+          el("span", { class: "code-title" }, el("span", { class: "code-label" }, `Code ${c.number}: `), "Coming soon"))))));
+}
 
 // ---------- Notifications ----------
 

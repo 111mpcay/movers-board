@@ -81,6 +81,7 @@
             <a id="nav-projects" class="topnav-link" href="#">Projects</a>
             <a id="nav-calendar" class="topnav-link" href="#calendar">Calendar<span id="calendar-count" class="notify-count" hidden></span></a>
             <a id="nav-people" class="topnav-link" href="#people">People</a>
+            <a id="nav-code" class="topnav-link" href="#code">Movers Code</a>
           </nav>
           <span id="summary" class="summary"></span>
         </div>
@@ -278,6 +279,17 @@
         <span>Open tasks and subtasks. Urgent is Critical or High.</span>
       </p>
       <div id="people-cards" class="people-cards"></div>
+    </main>
+
+    <!-- Movers Code: the seven codes of Movers. Each one opens to show what it means.
+         The words themselves are in app.js, under MOVERS_CODE. -->
+    <main id="code-view" class="sheet-wrap" hidden>
+      <div class="page-head">
+        <h1 class="page-title">Movers Code</h1>
+        <span id="code-summary" class="summary"></span>
+      </div>
+      <p class="code-hint">The seven codes of Movers. Click a code to read what it means.</p>
+      <ol id="code-list" class="code-list"></ol>
     </main>
     <datalist id="people-list"></datalist>
   </div>
