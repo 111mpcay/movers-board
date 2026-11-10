@@ -1096,7 +1096,11 @@ function renderPeople() {
     names.add(meeting.created_by);
     meeting.people.forEach((person) => names.add(person.name));
   }
-  $("people-list").replaceChildren(...[...names].sort().map((name) => el("option", { value: name })));
+  // This person's own name leads the suggestions, so giving something to yourself is the
+  // first pick. Everyone else follows in the order they always have.
+  const me = personKey(state.name);
+  const inOrder = [...names].sort((a, b) => (personKey(b) === me) - (personKey(a) === me) || (a < b ? -1 : a > b ? 1 : 0));
+  $("people-list").replaceChildren(...inOrder.map((name) => el("option", { value: name })));
 }
 
 // Everyone the given names cover, each once, with this person first.
@@ -2873,6 +2877,9 @@ function buildTaskWindow(w, task) {
       el("form", { class: "win-form", "data-form": "subtask", novalidate: true },
         textInput({ maxlength: "200", placeholder: "Add a subtask", "aria-label": "New subtask", "data-input": "title" }),
         textInput({ class: "input is-narrow", maxlength: "200", list: "people-list", placeholder: "Assign", "aria-label": "Assign the new subtask to, with commas between names", "data-input": "assignee" }),
+        // Anyone can add a subtask to any task and take it on themselves: this puts their own
+        // name in the Assign box, so nobody has to type it.
+        el("button", { class: "btn btn-quiet assign-me", type: "button", "data-assign-me-new": true, "aria-pressed": "false" }, "Assign to me"),
         el("button", { class: "btn btn-primary", type: "submit" }, "Add"))),
     // Where the task stands, as the people working on it post it. Typing @ mentions someone.
     taskFold("updates", ["Updates"],
@@ -2915,6 +2922,10 @@ function buildTaskWindow(w, task) {
   w.body.querySelector('[data-fold="meetings"]').dataset.section = "meetings";
   w.body.addEventListener("change", (event) => onWindowChange(w, event));
   w.body.addEventListener("input", previewProgress);
+  // "Assign to me" is lit while this person's name is in the new subtask's Assign box, typed or not.
+  w.body.addEventListener("input", (event) => {
+    if (event.target.matches?.('[data-form="subtask"] [data-input="assignee"]')) markAssignMe(event.target.form);
+  });
   w.body.addEventListener("submit", (event) => onWindowSubmit(w, event));
   w.body.addEventListener("click", (event) => onWindowClick(w, event));
   // Opening or folding a section sets how that section starts in every task from now on.
@@ -3080,6 +3091,8 @@ function renderTaskWindow(w) {
         s.assignees.length
           ? el("span", { class: "win-meta" }, assigneeText(s))
           : el("button", { class: "link-btn win-meta", type: "button", "data-assign": s.id, "aria-label": `Assign ${s.title}` }, "Unassigned"),
+        // Nobody's on it yet: one click takes it on, whoever created the task or the subtask.
+        !s.assignees.length && el("button", { class: "link-btn win-meta", type: "button", "data-assign-me": s.id, "aria-label": `Assign ${s.title} to me` }, "Assign to me"),
         due && el("span", { class: `due-note due-${due.tone}` }, due.text),
         // A reminder to yourself about this subtask. Not on a task that's only mirrored in.
         !held.has(s.id) && reminderButton(s),
@@ -3285,6 +3298,7 @@ async function onWindowSubmit(w, event) {
   if (!w.root.isConnected) return;
   if (result.ok) {
     form.reset();
+    markAssignMe(form);
     showWindowError(w, null);
     focusAfter.focus();
   } else {
@@ -3323,11 +3337,47 @@ function onWindowClick(w, event) {
   if (target.closest("[data-set-meeting]")) return openMeetingForm({ task: w.taskId });
   const assign = target.closest("[data-assign]");
   if (assign) return startAssigning(w, assign);
+  const takeOn = target.closest("[data-assign-me]");
+  if (takeOn) return assignToMe(w, takeOn.dataset.assignMe);
+  const mineToo = target.closest("[data-assign-me-new]");
+  if (mineToo) return toggleAssignMe(mineToo.form);
   const file = target.closest("[data-file]");
   if (file) return openFile(w, file.dataset.file, file.dataset.mime);
   const remove = target.closest("[data-remove]");
   if (remove) return removeAttachment(w, remove);
   if (target.closest("[data-delete-task]")) return deleteTask(w, target.closest("[data-delete-task]"));
+}
+
+// ---------- Taking a subtask on yourself ----------
+
+// Anyone on the board can add a subtask to any task, and assign any subtask, their own name
+// included. These are the one-click ways to do that last part without typing the name.
+
+const isMyName = (name) => personKey(name) === personKey(state.name);
+
+// "Assign to me" on a subtask nobody is on: it's this person's from here.
+function assignToMe(w, id) {
+  const subtask = findTask(id);
+  if (!subtask || subtask.assignees.length) return;
+  showWindowError(w, null);
+  updateTask(id, { assignees: [state.name] });
+  // The link has gone with "Unassigned", so the keyboard carries on from the subtask's name.
+  w.body.querySelector(`[data-subtask-row="${CSS.escape(id)}"] [data-open-task]`)?.focus();
+}
+
+// "Assign to me" beside the new subtask's Assign box: adds this person's name to the box, after
+// any already typed, or takes it out again. The box stays the say on who the subtask goes to.
+function toggleAssignMe(form) {
+  const box = form.querySelector('[data-input="assignee"]');
+  const typed = splitNames(box.value);
+  box.value = (typed.some(isMyName) ? typed.filter((name) => !isMyName(name)) : [...typed, state.name]).join(", ");
+  markAssignMe(form);
+}
+
+// Lights the button while this person's name is in the box, however it got there.
+function markAssignMe(form) {
+  const button = form?.querySelector("[data-assign-me-new]");
+  if (button) button.setAttribute("aria-pressed", String(splitNames(form.querySelector('[data-input="assignee"]').value).some(isMyName)));
 }
 
 // Swaps a subtask's "Unassigned" for a name box. Enter, clicking away or picking a
@@ -5072,7 +5122,7 @@ function renderMySubtasks() {
     el("p", { class: "hint my-subtasks-hint" }, "The subtasks assigned to you, in every project. Tick one when it's done."),
     ...(view.pending.length
       ? groups(view.pending)
-      : [el("p", { class: "win-empty" }, done.length ? "Nothing pending." : "You have no subtasks. One shows here once it's assigned to you.")]),
+      : [el("p", { class: "win-empty" }, done.length ? "Nothing pending." : "You have no subtasks. One shows here once it's assigned to you. To take one on yourself, open any task and choose Assign to me under Subtasks.")]),
     done.length > 0 && el("details", { class: "mine-done", open: doneOpen },
       el("summary", {}, `Done (${done.length})`),
       ...groups(view.done)),

@@ -1371,6 +1371,9 @@ summary.code-head:focus-visible { outline-offset: -2px; border-radius: 8px; }
 .win-form .input { flex: 1 1 130px; min-width: 0; min-height: 36px; padding: 6px 9px; }
 .win-form .btn { min-height: 36px; padding: 5px 13px; }
 .win-form .is-narrow { flex: 0 1 112px; }
+/* "Assign to me", beside the new subtask's Assign box. Lit while your own name is in the box. */
+.assign-me { white-space: nowrap; }
+.assign-me[aria-pressed="true"], .assign-me[aria-pressed="true"]:hover:not(:disabled) { color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
 .win-upload { position: relative; cursor: pointer; display: inline-flex; align-items: center; }
 .win-upload input { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; }
 .win-upload:focus-within { outline: 2px solid var(--orange); outline-offset: 2px; }
