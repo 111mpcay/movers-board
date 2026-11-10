@@ -1081,8 +1081,11 @@ function renderRows() {
   const focused = document.activeElement;
   const activeRow = focused?.closest?.(".task-row") || null;
   const inProject = tasksIn(state.projectId);
-  const tasks = state.filter.length ? inProject.filter((t) => matchesFilter(t, state.filter) || state.keepShown.has(t.id)) : inProject;
+  // Under a filter, the tasks that show only because they were just added.
+  const outside = new Set(state.filter.length ? inProject.filter((t) => !matchesFilter(t, state.filter)).map((t) => t.id) : []);
+  const tasks = inProject.filter((t) => !outside.has(t.id) || state.keepShown.has(t.id));
   renderFilter(inProject);
+  renderFilterNote(inProject.length, tasks.length, tasks.filter((t) => outside.has(t.id)).length);
   list.classList.toggle("is-filtered", state.filter.length > 0);
   // Another project's list starts from nothing. A mirrored task is in both, and its row in
   // the last one has that project's columns, even if it's the row that was being edited.
@@ -1107,8 +1110,26 @@ function renderRows() {
     }
     if (row === cursor) cursor = cursor.nextElementSibling;
     else list.insertBefore(row, cursor);
+    row.classList.toggle("is-outside-filter", outside.has(task.id));
   }
   if (focused?.isConnected && document.activeElement !== focused) focused.focus();
+}
+
+// Says so whenever the filter is hiding tasks in this project. The filter is remembered
+// from one visit to the next and applies in every project, so a list with tasks missing
+// otherwise looks as if they were never saved. A task that was just added and doesn't
+// match stays in view for now, and this warns that it won't after a reload.
+function renderFilterNote(total, shown, kept) {
+  const hidden = total - shown;
+  const note = $("filter-note");
+  note.hidden = !state.filter.length || (!hidden && !kept);
+  if (note.hidden) return;
+  const who = $("filter-btn").textContent.replace(/^Assigned to: /, "");
+  const parts = [hidden
+    ? `Showing ${shown} of ${total} ${total === 1 ? "task" : "tasks"}: ${hidden === 1 ? "1 is" : `${hidden} are`} hidden because this list is filtered to ${who}.`
+    : `This list is filtered to ${who}.`];
+  if (kept) parts.push(`${kept === 1 ? "1 task you just added doesn't" : `${kept} tasks you just added don't`} match the filter, and will be hidden when the page reloads.`);
+  $("filter-note-text").textContent = parts.join(" ");
 }
 
 function renderBoard() {
@@ -1219,6 +1240,10 @@ $("filter-list").addEventListener("change", (event) => {
 });
 
 $("filter-clear").addEventListener("click", () => {
+  setFilter([]);
+  $("filter-btn").focus();
+});
+$("filter-note-clear").addEventListener("click", () => {
   setFilter([]);
   $("filter-btn").focus();
 });

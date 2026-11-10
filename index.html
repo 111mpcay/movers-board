@@ -160,6 +160,11 @@
         <span class="spacer"></span>
         <button id="columns-btn" class="btn btn-quiet btn-small" type="button">Columns</button>
       </div>
+      <!-- Whenever the filter is hiding tasks in this project, since it's remembered and easy to forget -->
+      <p id="filter-note" class="filter-note" role="status" hidden>
+        <span id="filter-note-text"></span>
+        <button id="filter-note-clear" class="btn btn-quiet btn-small" type="button">Show everyone</button>
+      </p>
       <div class="sheet" role="table" aria-label="Task list">
         <div class="sheet-head" role="row">
           <div class="head-title" role="columnheader">
