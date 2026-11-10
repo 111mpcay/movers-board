@@ -5317,7 +5317,9 @@ const MOVERS_CODE = [
 ];
 
 // The words never change while the page is open, so the list is drawn once and an opened
-// code stays open through the board's refreshes.
+// code stays open through the board's refreshes. Each code carries a green check, so the
+// page reads as the checklist it is: these are what every Mover is held to. It's a mark,
+// not a box to tick. A slot with no code yet has an empty ring where its check will go.
 function renderCodePage() {
   const list = $("code-list");
   if ($("code-view").hidden || list.dataset.drawn) return;
@@ -5332,6 +5334,7 @@ function renderCodePage() {
       ? el("details", { class: "code-item" },
         el("summary", { class: "code-head" },
           el("span", { class: "code-num", "aria-hidden": "true" }, String(c.number)),
+          el("span", { class: "code-check", "aria-hidden": "true" }),
           el("span", { class: "code-title" }, el("span", { class: "code-label" }, `Code ${c.number}: `), c.title),
           el("span", { class: "code-toggle", "aria-hidden": "true" })),
         el("div", { class: "code-body" },
@@ -5341,6 +5344,7 @@ function renderCodePage() {
       : el("div", { class: "code-item is-empty" },
         el("div", { class: "code-head" },
           el("span", { class: "code-num", "aria-hidden": "true" }, String(c.number)),
+          el("span", { class: "code-check", "aria-hidden": "true" }),
           el("span", { class: "code-title" }, el("span", { class: "code-label" }, `Code ${c.number}: `), "Coming soon"))))));
 }
 
