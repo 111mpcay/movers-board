@@ -1457,6 +1457,8 @@ body::before {
 .mention-options { position: absolute; top: 100%; left: 0; z-index: 5; min-width: 180px; max-width: 100%; margin-top: 3px; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow-lift); }
 .mention-option { display: block; width: 100%; padding: 6px 9px; text-align: left; color: inherit; background: none; border: 0; border-radius: 5px; cursor: pointer; }
 .mention-option:hover, .mention-option.is-active { background: var(--surface-2); }
+/* What "all" stands for, beside it */
+.mention-option-hint { margin-left: 8px; font-size: 0.82rem; color: var(--muted); }
 
 /* Too narrow for the sheet: each row becomes a labelled card */
 @media (max-width: 980px) {

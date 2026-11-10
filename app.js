@@ -2351,6 +2351,11 @@ function knownPeople() {
 
 const WORD_CHAR = /[\p{L}\p{N}_]/u;
 
+// "@all" mentions everyone on the board at once. It's kept among the names an update or a
+// comment mentions, as a name is, and the board tells everyone it knows.
+const MENTION_ALL = "all";
+const isMentionAll = (name) => personKey(name) === MENTION_ALL;
+
 // Where the given names are mentioned in a comment: each "@Name", the longest name that
 // fits, and only where the @ starts a word, so an email address isn't a mention.
 function mentionSpans(text, names) {
@@ -2368,16 +2373,19 @@ function mentionSpans(text, names) {
 }
 
 // The people a comment being posted mentions, each once. The board is told, since a name
-// can have spaces in it and only the page knows where one ends.
-const mentionsIn = (text) => [...new Map(mentionSpans(text, knownPeople()).map((span) => [personKey(span.name), span.name])).values()];
+// can have spaces in it and only the page knows where one ends. "@all" counts as one.
+const mentionsIn = (text) => [...new Map(mentionSpans(text, [...knownPeople(), MENTION_ALL]).map((span) => [personKey(span.name), span.name])).values()];
 
 // A comment's words, with the people it mentions standing out, and this person most.
+// "@all" is this person too, unless they wrote it.
 function commentBody(comment) {
   const parts = [];
   let from = 0;
+  const me = personKey(state.name);
+  const isMe = (name) => personKey(name) === me || (isMentionAll(name) && personKey(comment.created_by) !== me);
   for (const span of mentionSpans(comment.body, comment.mentions || [])) {
     if (span.start > from) parts.push(comment.body.slice(from, span.start));
-    parts.push(el("span", { class: `mention${personKey(span.name) === personKey(state.name) ? " is-me" : ""}` }, comment.body.slice(span.start, span.end)));
+    parts.push(el("span", { class: `mention${isMe(span.name) ? " is-me" : ""}` }, comment.body.slice(span.start, span.end)));
     from = span.end;
   }
   if (from < comment.body.length) parts.push(comment.body.slice(from));
@@ -2386,7 +2394,8 @@ function commentBody(comment) {
 
 // The box a comment or an update is written in. Typing @ lists the people on the board,
 // narrowed by what follows it: Enter, Tab or a click puts the name in, and Escape puts the
-// list away. With `cancel` it's for editing what's already posted: it starts with those
+// list away. The list ends with "all", which mentions everyone on the board at once.
+// With `cancel` it's for editing what's already posted: it starts with those
 // words in it and has a Cancel button, which Escape presses when no list is open. With
 // `images` it takes images pasted into it too, to post with the words.
 function mentionForm({ name, placeholder, label, button, maxlength, value = "", cancel = false, images = false }) {
@@ -2408,7 +2417,8 @@ function mentionForm({ name, placeholder, label, button, maxlength, value = "", 
   const render = () => {
     list.hidden = !found.length;
     list.replaceChildren(...found.map((name, i) => el("li", {},
-      el("button", { class: `mention-option${i === active ? " is-active" : ""}`, type: "button", tabindex: "-1", "data-mention": name }, name))));
+      el("button", { class: `mention-option${i === active ? " is-active" : ""}`, type: "button", tabindex: "-1", "data-mention": name },
+        name, name === MENTION_ALL && el("span", { class: "mention-option-hint" }, "Everyone on the board")))));
   };
   const close = () => {
     found = [];
@@ -2417,12 +2427,19 @@ function mentionForm({ name, placeholder, label, button, maxlength, value = "", 
   const look = () => {
     const now = typing();
     const me = personKey(state.name);
+    const others = knownPeople().filter((name) => personKey(name) !== me && !isMentionAll(name));
     found = now
-      ? knownPeople()
-        .filter((name) => personKey(name) !== me && (personKey(name).startsWith(now.typed) || personKey(name).includes(` ${now.typed}`)))
+      ? others
+        .filter((name) => personKey(name).startsWith(now.typed) || personKey(name).includes(` ${now.typed}`))
         .sort((a, b) => a.localeCompare(b))
         .slice(0, 6)
       : [];
+    // "all" comes after the names, so the keys that pick a name stay what they were, and
+    // first once it's exactly what was typed. It's offered while there's anyone to tell.
+    if (now && others.length && MENTION_ALL.startsWith(now.typed)) {
+      if (now.typed === MENTION_ALL) found.unshift(MENTION_ALL);
+      else found.push(MENTION_ALL);
+    }
     active = 0;
     render();
   };
@@ -2994,7 +3011,7 @@ function renderTaskWindow(w) {
         // One that came from a meeting's notes says so.
         meetingTag(entry),
         // The people an update mentions stand out, as they do in a comment.
-        el("span", { class: "activity-note" }, ...commentBody({ body: entry.text, mentions: entry.mentions })),
+        el("span", { class: "activity-note" }, ...commentBody({ body: entry.text, mentions: entry.mentions, created_by: entry.by })),
         postImages(imagesOnUpdate(task, entry)),
         // A way to say it's been seen, and who has.
         likeRow(task, entry)))) : [el("li", { class: "win-empty" }, "No updates yet.")]);
