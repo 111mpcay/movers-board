@@ -379,9 +379,10 @@ body::before {
   background: var(--surface);
   border-inline: 1px solid var(--line);
 }
-.task-rows.is-filtered:empty::before { content: "No tasks in this project match this filter."; }
+.task-rows.is-filtered:empty::before { content: "No tasks in this project match the filters above."; }
 
-/* Above the sheet: the assignee filter on the left, the project's columns on the right. */
+/* Above the sheet: the assignee and status filters on the left, the project's columns on
+   the right. */
 .sheet-tools { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
 .sheet-tools .task-filter { margin-bottom: 0; }
 /* Shown whenever the filter is hiding tasks in this project, so a short list isn't taken
@@ -403,12 +404,14 @@ body::before {
 .own-select { width: 100%; max-width: 150px; text-overflow: ellipsis; }
 .cell-input[type="number"] { max-width: 120px; font-variant-numeric: tabular-nums; }
 
-/* The assignee filter: a button, and a list of people to tick that drops down from it.
-   The list hangs from the button's left edge, which is always at the page's left. */
+/* The assignee and status filters: each a button, and a list to tick that drops down from
+   it. The list hangs from the button's left edge, or as far left of it as a narrow page
+   needs (setFilterOpen in app.js). */
 .task-filter { position: relative; width: fit-content; max-width: 100%; margin-bottom: 12px; }
-#filter-btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-#filter-btn::after { content: " \25BE"; }
-#filter-btn.is-active { color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
+#filter-btn, #status-filter-btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+#filter-btn::after, #status-filter-btn::after { content: " \25BE"; }
+#filter-btn.is-active, #status-filter-btn.is-active { color: var(--on-navy); background: var(--navy); border-color: var(--navy); }
+#status-filter-panel { width: min(240px, calc(100vw - 32px)); }
 .filter-panel {
   position: absolute;
   left: 0;
@@ -431,6 +434,7 @@ body::before {
 .filter-none { color: var(--muted); }
 .filter-count { margin-left: auto; font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 #filter-clear { margin: 6px 12px 4px; font-size: 0.88rem; }
+#status-filter-all, #status-filter-reset { display: block; margin: 6px 12px 4px; font-size: 0.88rem; }
 
 .task-row, .quick-add {
   position: relative;

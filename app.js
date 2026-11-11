@@ -56,6 +56,9 @@ const WANTS_DEMO = location.hostname === "localhost" && new URLSearchParams(loca
 const SESSION_KEY = WANTS_DEMO ? "board.session.demo" : "board.session";
 const NAME_KEY = "board.lastName";
 const FILTER_KEY = "board.assigneeFilter";
+const STATUS_FILTER_KEY = "board.statusFilter";
+const STATUSES_SHOWN_AT_FIRST = ["todo", "doing"]; // Done is left out until someone ticks it
+const FILTER_MENUS = ["filter", "status-filter"]; // the dropdowns above the list, by how their ids start
 
 const state = {
   store: null,
@@ -65,7 +68,8 @@ const state = {
   archiveAsk: 0, // the timer on the Archive button's "are you sure", while it's asking
   tasks: [],
   filter: readFilter(), // the people whose tasks show, as name keys; "" is unassigned, and empty shows everyone
-  keepShown: new Set(), // tasks just added, which stay in view under the filter until it's next changed
+  statusFilter: readStatusFilter(), // the statuses whose tasks show, as STATUS keys
+  keepShown: new Set(), // tasks just added or changed here, which stay in view under the filters until they're next changed
   meetings: [],
   weekStart: startOfWeek(new Date()), // the Monday of the week the calendar is showing
   notifications: [],
@@ -114,6 +118,15 @@ function readFilter() {
   } catch {
     return [];
   }
+}
+
+// What this browser last chose to show, or To do and In progress if it never chose.
+function readStatusFilter() {
+  try {
+    const saved = JSON.parse(readStorage("localStorage", STATUS_FILTER_KEY));
+    if (Array.isArray(saved)) return Object.keys(STATUS).filter((key) => saved.includes(key));
+  } catch {}
+  return [...STATUSES_SHOWN_AT_FIRST];
 }
 
 function readStorage(area, key) {
@@ -504,7 +517,7 @@ function showGate(message) {
   clearSession();
   closeAllWindows();
   closeNotifications();
-  setFilterOpen(false);
+  closeFilters();
   document.title = "Movers Board";
   state.projects = [];
   state.projectId = null;
@@ -745,7 +758,7 @@ function setRenaming(on) {
 
 window.addEventListener("hashchange", () => {
   state.windowEntryHref = history.state?.boardWindow ? location.href : null;
-  setFilterOpen(false);
+  closeFilters();
   if (!$("gate").hidden) return;
   showProjectError("project-error", null);
   setRenaming(false);
@@ -1131,9 +1144,76 @@ function setFilter(keys) {
   renderRows();
 }
 
-function setFilterOpen(open) {
-  $("filter-panel").hidden = !open;
-  $("filter-btn").setAttribute("aria-expanded", String(open));
+// Opens or closes one of the dropdowns above the list. Only one is open at a time.
+function setFilterOpen(open, menu = "filter") {
+  if (open) FILTER_MENUS.forEach((other) => { if (other !== menu) setFilterOpen(false, other); });
+  const panel = $(`${menu}-panel`);
+  panel.hidden = !open;
+  $(`${menu}-btn`).setAttribute("aria-expanded", String(open));
+  // A list that would run off the right of a narrow page moves left until it fits.
+  panel.style.left = "";
+  if (open) {
+    const over = panel.getBoundingClientRect().right - (document.documentElement.clientWidth - 16);
+    if (over > 0) panel.style.left = `${-over}px`;
+  }
+}
+function closeFilters() {
+  FILTER_MENUS.forEach((menu) => setFilterOpen(false, menu));
+}
+
+// The Status filter: which statuses show. Like Assigned to, it's remembered in this browser
+// and applies in every project.
+const statusShown = (task) => state.statusFilter.includes(task.status);
+const allStatusesShown = () => Object.keys(STATUS).every((key) => state.statusFilter.includes(key));
+const statusesAsAtFirst = () => state.statusFilter.length === STATUSES_SHOWN_AT_FIRST.length && STATUSES_SHOWN_AT_FIRST.every((key) => state.statusFilter.includes(key));
+
+function setStatusFilter(keys) {
+  state.statusFilter = Object.keys(STATUS).filter((key) => keys.includes(key));
+  // Nothing is kept for the usual choice, so a browser that never changed it follows the default.
+  writeStorage("localStorage", STATUS_FILTER_KEY, statusesAsAtFirst() ? null : JSON.stringify(state.statusFilter));
+  state.keepShown.clear();
+  renderRows();
+}
+
+function statusSummary() {
+  if (allStatusesShown()) return "All";
+  if (statusesAsAtFirst()) return "Not done";
+  return state.statusFilter.map((key) => STATUS[key]).join(", ") || "None";
+}
+
+// The Status dropdown: a box for each status, each with how many of this project's tasks
+// it would show for the people chosen under Assigned to.
+function renderStatusFilter(pool) {
+  $("status-filter-btn").textContent = `Status: ${statusSummary()}`;
+  $("status-filter-btn").classList.toggle("is-active", !statusesAsAtFirst());
+  $("status-filter-all").hidden = allStatusesShown();
+  $("status-filter-reset").hidden = statusesAsAtFirst();
+
+  const rows = Object.entries(STATUS).map(([key, label]) => [key, label, pool.filter((t) => t.status === key).length]);
+  const list = $("status-filter-list");
+  const signature = JSON.stringify(rows);
+  if (list.dataset.sig !== signature) {
+    // Rebuilding would otherwise drop the keyboard's place in the list.
+    const focused = list.contains(document.activeElement) ? document.activeElement.value : null;
+    list.dataset.sig = signature;
+    list.replaceChildren(...rows.map(([key, label, count]) => el("li", {},
+      el("label", { class: "filter-option" },
+        el("input", { type: "checkbox", value: key }),
+        el("span", { class: `dot dot-${key}`, "aria-hidden": "true" }),
+        el("span", {}, label),
+        el("span", { class: "filter-count" }, String(count))))));
+    if (focused !== null) [...list.querySelectorAll("input")].find((box) => box.value === focused)?.focus();
+  }
+  for (const box of list.querySelectorAll("input")) box.checked = state.statusFilter.includes(box.value);
+}
+
+// The filters that leave a task out of its project's list, by the names on their buttons.
+function filtersHiding(task) {
+  if (task.parent_id || state.keepShown.has(task.id)) return [];
+  return [
+    state.filter.length > 0 && !matchesFilter(task, state.filter) && "Assigned to",
+    !statusShown(task) && "Status",
+  ].filter(Boolean);
 }
 
 // The dropdown's button and its list: a checkbox for each person, then Unassigned, each
@@ -1185,12 +1265,15 @@ function renderRows() {
   const focused = document.activeElement;
   const activeRow = focused?.closest?.(".task-row") || null;
   const inProject = tasksIn(state.projectId);
-  // Under a filter, the tasks that show only because they were just added.
-  const outside = new Set(state.filter.length ? inProject.filter((t) => !matchesFilter(t, state.filter)).map((t) => t.id) : []);
+  const forPeople = (t) => !state.filter.length || matchesFilter(t, state.filter);
+  // The tasks the filters leave out. Any just added or changed here still show, marked.
+  const outside = new Set(inProject.filter((t) => !forPeople(t) || !statusShown(t)).map((t) => t.id));
   const tasks = inProject.filter((t) => !outside.has(t.id) || state.keepShown.has(t.id));
-  renderFilter(inProject);
+  // Each dropdown counts within what the other one lets through.
+  renderFilter(inProject.filter(statusShown));
+  renderStatusFilter(inProject.filter(forPeople));
   renderFilterNote(inProject.length, tasks.length, tasks.filter((t) => outside.has(t.id)).length);
-  list.classList.toggle("is-filtered", state.filter.length > 0);
+  list.classList.toggle("is-filtered", outside.size > 0);
   // Another project's list starts from nothing. A mirrored task is in both, and its row in
   // the last one has that project's columns, even if it's the row that was being edited.
   if (list.dataset.project !== String(state.projectId)) {
@@ -1220,21 +1303,33 @@ function renderRows() {
   if (focused?.isConnected && document.activeElement !== focused) focused.focus();
 }
 
-// Says so whenever the filter is hiding tasks in this project. The filter is remembered
-// from one visit to the next and applies in every project, so a list with tasks missing
-// otherwise looks as if they were never saved. A task that was just added and doesn't
-// match stays in view for now, and this warns that it won't after a reload.
+// Says so whenever a filter someone chose is hiding tasks in this project. The filters are
+// remembered from one visit to the next and apply in every project, so a list with tasks
+// missing otherwise looks as if they were never saved. Done tasks left out as usual need
+// no note, unless that leaves nothing on the list. A task that was just added or changed
+// here and doesn't match stays in view for now, and this warns that it won't after a reload.
 function renderFilterNote(total, shown, kept) {
   const hidden = total - shown;
+  const byPeople = state.filter.length > 0;
   const note = $("filter-note");
-  note.hidden = !state.filter.length || (!hidden && !kept);
+  note.hidden = !kept && !(hidden && (byPeople || !statusesAsAtFirst() || !shown));
   if (note.hidden) return;
   const who = $("filter-btn").textContent.replace(/^Assigned to: /, "");
+  const statuses = state.statusFilter.map((key) => STATUS[key]);
+  const how = [
+    byPeople && `is filtered to ${who}`,
+    allStatusesShown() ? null
+      : !statuses.length ? "shows no tasks, since nothing is ticked under Status"
+      : statusesAsAtFirst() ? "shows only tasks that aren't done"
+      : `shows only tasks whose status is ${statuses.join(" or ")}`,
+  ].filter(Boolean).join(", and ");
   const parts = [hidden
-    ? `Showing ${shown} of ${total} ${total === 1 ? "task" : "tasks"}: ${hidden === 1 ? "1 is" : `${hidden} are`} hidden because this list is filtered to ${who}.`
-    : `This list is filtered to ${who}.`];
-  if (kept) parts.push(`${kept === 1 ? "1 task you just added doesn't" : `${kept} tasks you just added don't`} match the filter, and will be hidden when the page reloads.`);
+    ? `Showing ${shown} of ${total} ${total === 1 ? "task" : "tasks"}: ${hidden === 1 ? "1 is" : `${hidden} are`} hidden because this list ${how}.`
+    : `This list ${how}.`];
+  if (kept) parts.push(`${kept === 1 ? "1 task you just added or changed doesn't" : `${kept} tasks you just added or changed don't`} match the filters, and will be hidden when the page reloads.`);
   $("filter-note-text").textContent = parts.join(" ");
+  $("filter-note-clear").hidden = !byPeople;
+  $("status-note-clear").hidden = allStatusesShown();
 }
 
 function renderBoard() {
@@ -1317,6 +1412,7 @@ async function updateTask(id, changes, focusField) {
 
   // Show the change straight away; the next read confirms it.
   const { custom: _own, ...plainDiff } = diff;
+  const onList = !$("project-view").hidden && !!$("task-rows").querySelector(`[data-id="${CSS.escape(id)}"]`);
   Object.assign(task, plainDiff, { updated_by: state.name, updated_at: new Date().toISOString() });
   if ("project_id" in plainDiff) {
     // Moved to a project whose list it was mirrored into: it lives there now, and isn't in
@@ -1327,6 +1423,9 @@ async function updateTask(id, changes, focusField) {
   }
   task.custom = Object.fromEntries(Object.entries({ ...task.custom, ...own }).filter(([, value]) => String(value ?? "") !== ""));
   refreshRow(id, focusField);
+  // A task marked Done on the list stays there, marked, until the filters next change,
+  // rather than vanishing from under the click.
+  if (onList && "status" in plainDiff) keepInView(id);
   renderSummary();
   renderWindows();
   const saved = await write(() => state.store.save(id, diff), null);
@@ -1379,6 +1478,24 @@ $("filter-clear").addEventListener("click", () => {
 $("filter-note-clear").addEventListener("click", () => {
   setFilter([]);
   $("filter-btn").focus();
+});
+
+$("status-filter-btn").addEventListener("click", () => setFilterOpen($("status-filter-panel").hidden, "status-filter"));
+
+$("status-filter-list").addEventListener("change", (event) => {
+  const key = event.target.value;
+  setStatusFilter(event.target.checked ? [...state.statusFilter, key] : state.statusFilter.filter((other) => other !== key));
+});
+
+for (const id of ["status-filter-all", "status-note-clear"]) {
+  $(id).addEventListener("click", () => {
+    setStatusFilter(Object.keys(STATUS));
+    $("status-filter-btn").focus();
+  });
+}
+$("status-filter-reset").addEventListener("click", () => {
+  setStatusFilter(STATUSES_SHOWN_AT_FIRST);
+  $("status-filter-btn").focus();
 });
 
 rows.addEventListener("click", (event) => {
@@ -1516,8 +1633,9 @@ function taskNamed(title, { projectId = null, parentId = null, except = null }) 
 // it says so, since otherwise the name looks free.
 function nameTakenMessage(other, parentId = null) {
   if (parentId) return `This task already has a subtask called “${other.title}”. Give this one a different name.`;
-  const hidden = state.filter.length > 0 && !matchesFilter(other, state.filter) && !state.keepShown.has(other.id);
-  return `There's already a task called “${other.title}” in this project.${hidden ? " It's hidden by the Assigned to filter." : ""} Give this one a different name.`;
+  const by = filtersHiding(other);
+  const hidden = by.length ? ` It's hidden by the ${by.join(" and ")} ${by.length > 1 ? "filters" : "filter"}${by.includes("Status") ? ` (it's ${STATUS[other.status]})` : ""}.` : "";
+  return `There's already a task called “${other.title}” in this project.${hidden} Give this one a different name.`;
 }
 
 // The message beside the box at the bottom of the list, in place of its hint.
@@ -5638,7 +5756,9 @@ $("notify-list").addEventListener("click", (event) => {
 
 document.addEventListener("pointerdown", (event) => {
   if (!event.target.closest(".notify")) closeNotifications();
-  if (!event.target.closest(".task-filter")) setFilterOpen(false);
+  // A press outside a dropdown closes it. Each dropdown sits in its own .task-filter.
+  const inside = event.target.closest(".task-filter");
+  FILTER_MENUS.forEach((menu) => { if (!inside?.contains($(`${menu}-btn`))) setFilterOpen(false, menu); });
 });
 
 document.addEventListener("keydown", (event) => {
@@ -5647,9 +5767,10 @@ document.addEventListener("keydown", (event) => {
     closeNotifications();
     $("notify-btn").focus();
   }
-  if (!$("filter-panel").hidden) {
-    setFilterOpen(false);
-    $("filter-btn").focus();
+  for (const menu of FILTER_MENUS) {
+    if ($(`${menu}-panel`).hidden) continue;
+    setFilterOpen(false, menu);
+    $(`${menu}-btn`).focus();
   }
 });
 

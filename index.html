@@ -185,6 +185,15 @@
             <button id="filter-clear" class="link-btn" type="button" hidden>Show everyone</button>
           </div>
         </div>
+        <!-- Which statuses show. Done is left out until someone ticks it. -->
+        <div class="task-filter status-filter">
+          <button id="status-filter-btn" class="btn btn-quiet btn-small" type="button" aria-expanded="false" aria-controls="status-filter-panel">Status: Not done</button>
+          <div id="status-filter-panel" class="filter-panel" role="group" aria-label="Show tasks with status" hidden>
+            <ul id="status-filter-list" class="filter-list"></ul>
+            <button id="status-filter-all" class="link-btn" type="button" hidden>Show all statuses</button>
+            <button id="status-filter-reset" class="link-btn" type="button" hidden>Hide done tasks</button>
+          </div>
+        </div>
         <span class="spacer"></span>
         <button id="columns-btn" class="btn btn-quiet btn-small" type="button">Columns</button>
       </div>
@@ -192,6 +201,7 @@
       <p id="filter-note" class="filter-note" role="status" hidden>
         <span id="filter-note-text"></span>
         <button id="filter-note-clear" class="btn btn-quiet btn-small" type="button">Show everyone</button>
+        <button id="status-note-clear" class="btn btn-quiet btn-small" type="button">Show all statuses</button>
       </p>
       <div class="sheet" role="table" aria-label="Task list">
         <div class="sheet-head" role="row">
