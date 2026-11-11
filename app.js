@@ -42,6 +42,7 @@ const MEETING_NOTICE = {
   rescheduled: "rescheduled a meeting",
   removed: "removed you from a meeting",
   cancelled: "cancelled a meeting",
+  mentioned_note: "mentioned you in meeting notes",
 };
 const POLL_MS = 5000;
 const MAX_FILE_BYTES = 25 * 1024 * 1024;
@@ -391,8 +392,8 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     removeMeetingPerson: (id, name) => rpc("movers_remove_meeting_person", { p_token: token, p_id: id, p_name: name }),
     cancelMeeting: (id) => rpc("movers_cancel_meeting", { p_token: token, p_id: id }),
     completeMeeting: (id, done) => rpc("movers_complete_meeting", { p_token: token, p_id: id, p_done: done }),
-    addMeetingNote: (meetingId, body) => rpc("movers_add_meeting_note", { p_token: token, p_meeting_id: meetingId, p_body: body }),
-    editMeetingNote: (id, body) => rpc("movers_edit_meeting_note", { p_token: token, p_id: id, p_body: body }),
+    addMeetingNote: (meetingId, body, mentions) => rpc("movers_add_meeting_note", { p_token: token, p_meeting_id: meetingId, p_body: body, p_mentions: mentions || [] }),
+    editMeetingNote: (id, body, mentions) => rpc("movers_edit_meeting_note", { p_token: token, p_id: id, p_body: body, p_mentions: mentions || [] }),
     deleteMeetingNote: (id) => rpc("movers_delete_meeting_note", { p_token: token, p_id: id }),
     rescheduleMeeting: (id, startsAt, endsAt, reason, askAgain) => rpc("movers_reschedule_meeting", {
       p_token: token, p_id: id, p_starts_at: startsAt, p_ends_at: endsAt, p_reason: reason, p_ask_again: askAgain,
@@ -2491,7 +2492,8 @@ function mentionSpans(text, names) {
 
 // The people a comment being posted mentions, each once. The board is told, since a name
 // can have spaces in it and only the page knows where one ends. "@all" counts as one.
-const mentionsIn = (text) => [...new Map(mentionSpans(text, [...knownPeople(), MENTION_ALL]).map((span) => [personKey(span.name), span.name])).values()];
+// `people` is who can be mentioned there: everyone the board knows, unless it's narrower.
+const mentionsIn = (text, people = knownPeople()) => [...new Map(mentionSpans(text, [...people, MENTION_ALL]).map((span) => [personKey(span.name), span.name])).values()];
 
 // A comment's words, with the people it mentions standing out, and this person most.
 // "@all" is this person too, unless they wrote it.
@@ -2514,8 +2516,10 @@ function commentBody(comment) {
 // list away. The list ends with "all", which mentions everyone on the board at once.
 // With `cancel` it's for editing what's already posted: it starts with those
 // words in it and has a Cancel button, which Escape presses when no list is open. With
-// `images` it takes images pasted into it too, to post with the words.
-function mentionForm({ name, placeholder, label, button, maxlength, value = "", cancel = false, images = false }) {
+// `images` it takes images pasted into it too, to post with the words. `people` says who
+// it lists, when that's fewer than everyone (a meeting's notes), and `allHint` what "all"
+// stands for there; each is asked again whenever the list opens.
+function mentionForm({ name, placeholder, label, button, maxlength, value = "", cancel = false, images = false, people = knownPeople, allHint = () => "Everyone on the board" }) {
   const input = textInput({ maxlength, placeholder, "aria-label": label, autocomplete: "off", "data-input": "text" });
   input.value = value;
   const cancelButton = cancel ? el("button", { class: "btn btn-quiet", type: "button", "data-cancel-edit": true }, "Cancel") : null;
@@ -2535,7 +2539,7 @@ function mentionForm({ name, placeholder, label, button, maxlength, value = "", 
     list.hidden = !found.length;
     list.replaceChildren(...found.map((name, i) => el("li", {},
       el("button", { class: `mention-option${i === active ? " is-active" : ""}`, type: "button", tabindex: "-1", "data-mention": name },
-        name, name === MENTION_ALL && el("span", { class: "mention-option-hint" }, "Everyone on the board")))));
+        name, name === MENTION_ALL && el("span", { class: "mention-option-hint" }, allHint())))));
   };
   const close = () => {
     found = [];
@@ -2544,7 +2548,7 @@ function mentionForm({ name, placeholder, label, button, maxlength, value = "", 
   const look = () => {
     const now = typing();
     const me = personKey(state.name);
-    const others = knownPeople().filter((name) => personKey(name) !== me && !isMentionAll(name));
+    const others = people().filter((name) => personKey(name) !== me && !isMentionAll(name));
     found = now
       ? others
         .filter((name) => personKey(name).startsWith(now.typed) || personKey(name).includes(` ${now.typed}`))
@@ -4370,12 +4374,11 @@ function buildMeetingWindow(w) {
         el("button", { class: "btn btn-quiet", type: "submit" }, "Add person"))),
     // What was said and decided, as the people in the meeting write it down. Separate from
     // the Notes the meeting was set with, which say what it's about.
+    // Typing @ mentions someone who can see the meeting, who is then told.
     section("Meeting notes",
       el("p", { class: "hint", "data-notes-hint": true, hidden: true }),
       el("ul", { class: "activity-list note-list", "data-list": "notes" }),
-      el("form", { class: "win-form", "data-form": "add-note", novalidate: true },
-        textInput({ maxlength: "1000", placeholder: "Add a note from the meeting", "aria-label": "New meeting note", "data-input": "note" }),
-        el("button", { class: "btn btn-primary", type: "submit" }, "Add note"))),
+      mentionForm({ name: "add-note", placeholder: "Add a note from the meeting. Type @ to mention", label: "New meeting note", button: "Add note", maxlength: "1000", ...meetingMentions(w) })),
     el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
     el("div", { class: "meeting-actions", "data-list": "actions" }));
   w.body.querySelector('[data-list="notes"]').closest("section").dataset.notesSection = "";
@@ -4463,15 +4466,16 @@ function renderMeetingWindow(w) {
   const hint = w.body.querySelector("[data-notes-hint]");
   hint.hidden = !task || !inIt;
   hint.textContent = task ? `Notes also go to the updates of ${task.title}, tagged Meeting Notes.` : "";
-  renderList(w, "notes", w.editingNote ? ["editing", w.editingNote] : posted.map((n) => [n.id, n.body, n.created_by, n.edited_at, n.on_task, timeAgo(n.created_at), state.name]), () =>
+  renderList(w, "notes", w.editingNote ? ["editing", w.editingNote] : posted.map((n) => [n.id, n.body, n.mentions, n.created_by, n.edited_at, n.on_task, timeAgo(n.created_at), state.name]), () =>
     posted.length ? posted.map((n) => (w.editingNote === n.id
-      ? el("li", { class: "is-editing", "data-note": n.id }, noteEditForm(n))
+      ? el("li", { class: "is-editing", "data-note": n.id }, noteEditForm(w, n))
       : el("li", { "data-note": n.id },
         el("strong", {}, n.created_by), " ",
         el("span", { class: "activity-time" }, timeAgo(n.created_at)),
         editedMark(n.edited_at),
         personKey(n.created_by) === personKey(state.name) && ownActions("note", n.id),
-        el("span", { class: "activity-note" }, n.body),
+        // The people it mentions stand out, as in an update.
+        el("span", { class: "activity-note" }, ...commentBody({ body: n.body, mentions: n.mentions, created_by: n.created_by })),
         n.on_task && el("span", { class: "win-meta note-on-task", "data-on-task": true }, "Also in the task's updates")))) : [el("li", { class: "win-empty" }, "No notes yet.")]);
   w.body.querySelector('[data-form="add-note"]').hidden = !inIt;
 
@@ -4514,21 +4518,37 @@ function onMeetingClick(w, event) {
 
 // ---------- A meeting's notes ----------
 
-// The box a note is edited in, with its words in it. Esc gives up the edit.
-function noteEditForm(note) {
-  const input = textInput({ maxlength: "1000", "aria-label": "Edit your note", "data-input": "text" });
-  input.value = note.body;
-  const cancel = el("button", { class: "btn btn-quiet", type: "button", "data-cancel-edit": true }, "Cancel");
-  input.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    event.stopPropagation(); // Esc here gives up the edit, not the whole window
-    cancel.click();
-  });
-  const form = el("form", { class: "win-form", "data-form": "edit-note", novalidate: true },
-    input, el("button", { class: "btn btn-primary", type: "submit" }, "Save"), cancel);
+// Who a meeting's notes can mention: the people who can see the meeting. That's everyone on
+// the board once it's confirmed, and until then whoever set it and the people invited. The
+// board tells only those, so "all" there is everyone in the meeting.
+function meetingAudience(m) {
+  if (!m) return [];
+  if (isConfirmed(m)) return knownPeople();
+  const names = new Map();
+  for (const name of [m.created_by, ...m.people.map((p) => p.name)]) {
+    const key = personKey(name);
+    if (key && !names.has(key)) names.set(key, String(name).trim());
+  }
+  return [...names.values()];
+}
+
+// The mention picker's list for a meeting window's notes, as the meeting stands each time.
+const meetingMentions = (w) => ({
+  people: () => meetingAudience(findMeeting(w.meetingId)),
+  allHint: () => (findMeeting(w.meetingId) && !isConfirmed(findMeeting(w.meetingId)) ? "Everyone in this meeting" : "Everyone on the board"),
+});
+
+// The box a note is edited in, with its words in it. Typing @ mentions someone, as when
+// adding one. Esc gives up the edit.
+function noteEditForm(w, note) {
+  const form = mentionForm({ name: "edit-note", placeholder: "", label: "Edit your note", button: "Save", maxlength: "1000", value: note.body, cancel: true, ...meetingMentions(w) });
   form.dataset.key = note.id;
   return form;
+}
+
+// When a notice of a mention in a meeting's notes is opened: the notes, in view.
+function showMeetingNotes(id) {
+  state.windows.get(`meeting:${id}`)?.body.querySelector("[data-notes-section]")?.scrollIntoView({ block: "nearest" });
 }
 
 function startNoteEdit(w, id) {
@@ -4554,12 +4574,13 @@ function stopNoteEdit(w) {
 async function addMeetingNote(w, event) {
   event.preventDefault();
   const form = event.target;
-  const input = form.querySelector('[data-input="note"]');
+  const input = form.querySelector('[data-input="text"]');
   const body = input.value.trim();
   if (!body) return input.focus();
+  const mentions = mentionsIn(body, meetingAudience(findMeeting(w.meetingId)));
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
-  const result = await write(() => state.store.addMeetingNote(w.meetingId, body), null);
+  const result = await write(() => state.store.addMeetingNote(w.meetingId, body, mentions), null);
   button.disabled = false;
   if (!w.root.isConnected) return;
   if (!result.ok) {
@@ -4584,13 +4605,14 @@ async function saveMeetingNote(w, event) {
   const note = (findMeeting(w.meetingId)?.meeting_notes || []).find((n) => n.id === id);
   // The same words: there's nothing to save.
   if (note && note.body === text) return stopNoteEdit(w);
+  const mentions = mentionsIn(text, meetingAudience(findMeeting(w.meetingId)));
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
-  const result = await write(() => state.store.editMeetingNote(id, text), null);
+  const result = await write(() => state.store.editMeetingNote(id, text, mentions), null);
   button.disabled = false;
   if (!w.root.isConnected) return;
   if (!result.ok) return showWindowError(w, ownPostError(result.error, "note", "saved"));
-  if (note) Object.assign(note, { body: text, edited_at: new Date().toISOString() });
+  if (note) Object.assign(note, { body: text, mentions: result.result?.mentions ?? mentions, edited_at: new Date().toISOString() });
   stopNoteEdit(w);
 }
 
@@ -5438,6 +5460,8 @@ function notificationLines(n) {
     // An edit says what changed. A notice from before edits said that was only ever sent
     // for a new time, place or repeat, and reads as it did.
     if (n.action === "changed") return [headline, [n.title, n.detail ? when : `now ${when}`], n.detail ? capitalize(n.detail) : null];
+    // A mention in its notes says what the note says.
+    if (n.action === "mentioned_note") return [headline, [n.title, when], `“${String(n.detail || "")}”`];
     return [headline, [n.title, when]];
   }
   const where = [n.title, n.parent_title && `in ${n.parent_title}`, n.project_name];
@@ -5557,7 +5581,7 @@ function renderNotifications() {
           change && el("span", { class: "notify-task notify-change" }, change),
           el("span", { class: "notify-time" }, timeAgo(n.created_at))));
     })
-    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates and comments, updates and comments of yours that were acknowledged, reminders you set, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
+    : [el("li", { class: "notify-empty" }, "Nothing yet. Assignments, changes to your tasks, mentions in updates, comments and meeting notes, updates and comments of yours that were acknowledged, reminders you set, meeting invites, reminders for tasks that are due and meetings about to start, and deletions of things you created show up here.")]));
 }
 
 function openNotifications() {
@@ -5599,14 +5623,17 @@ $("notify-read-all").addEventListener("click", () => markNotificationsRead(null)
 $("notify-list").addEventListener("click", (event) => {
   const item = event.target.closest("[data-notification]");
   if (!item) return;
-  // A mention or an acknowledgment opens the task at the section it was made in.
-  const mentionedIn = { mentioned: "comments", mentioned_update: "updates", liked: "updates", liked_comment: "comments" }[state.notifications.find((n) => n.id === item.dataset.notification)?.action];
+  // A mention or an acknowledgment opens the task at the section it was made in, and a
+  // mention in a meeting's notes opens the meeting at its notes.
+  const action = state.notifications.find((n) => n.id === item.dataset.notification)?.action;
+  const mentionedIn = { mentioned: "comments", mentioned_update: "updates", liked: "updates", liked_comment: "comments" }[action];
   markNotificationsRead([item.dataset.notification]);
   // On a phone the list is its own page, so leave it up when there's nothing to go to.
   if (!isPhone() || findTask(item.dataset.task) || findMeeting(item.dataset.openMeeting)) closeNotifications();
   openTask(item.dataset.task);
   if (mentionedIn) showSection(item.dataset.task, mentionedIn);
   openMeeting(item.dataset.openMeeting);
+  if (action === "mentioned_note") showMeetingNotes(item.dataset.openMeeting);
 });
 
 document.addEventListener("pointerdown", (event) => {
