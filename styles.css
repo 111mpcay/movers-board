@@ -833,6 +833,12 @@ body::before {
 .person-focus { font-weight: 700; color: var(--orange); white-space: nowrap; }
 .focus-mark { flex: none; align-self: center; font-size: 0.9rem; line-height: 1; color: var(--orange); }
 .task-focus { font-weight: 600; color: var(--orange); }
+/* Who approves a task, and a task waiting for them to: in its row, and in a subtask list */
+.task-approval.is-waiting { font-weight: 600; color: var(--orange); }
+/* In a task's window while it waits for its approver */
+.approval-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 12px; font-size: 0.88rem; font-weight: 500; overflow-wrap: anywhere; color: var(--warn-fg); background: var(--warn-bg); border-radius: 6px; }
+.approver-input:disabled { color: var(--ink); background: var(--surface-2); cursor: not-allowed; }
+.approver-hint { display: block; }
 .focus-for { width: fit-content; padding: 3px 10px; font-size: 0.86rem; font-weight: 600; color: var(--warn-fg); background: var(--warn-bg); border-radius: 12px; }
 /* Too narrow for one line: the bar drops under the name and the numbers. */
 @media (max-width: 700px) {

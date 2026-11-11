@@ -974,6 +974,7 @@ function rowSignature(task) {
     task.title, task.assignees, task.urgency, task.deadline, task.repeat, task.status, task.progress,
     task.updated_by, timeAgo(task.updated_at), deadlineNote(task)?.text, subtaskSummary(task),
     task.custom, state.columnsSig, mirrorNote(task, state.projectId), focusNames(task.id),
+    task.approver, waitingNote(task),
   ]);
 }
 
@@ -1042,7 +1043,11 @@ function renderRow(task) {
         el("button", { class: "task-title", type: "button" }, task.title),
         el("div", { class: "task-meta" }, `${task.updated_by} · ${timeAgo(task.updated_at)}${subtaskSummary(task)}${repeats(task) ? ` · Repeats ${task.repeat}` : ""}${mirrored ? ` · ${mirrored}` : ""}`,
           // Whose focus task it is, which everyone sees.
-          focusNames(task.id).length > 0 && el("span", { class: "task-focus" }, ` · ★ Focus: ${focusNames(task.id).join(", ")}`))),
+          focusNames(task.id).length > 0 && el("span", { class: "task-focus" }, ` · ★ Focus: ${focusNames(task.id).join(", ")}`),
+          // Who approves it, or that it's waiting for them to.
+          task.approver && (waitingNote(task)
+            ? el("span", { class: "task-approval is-waiting" }, ` · ${waitingNote(task)}`)
+            : el("span", { class: "task-approval" }, ` · Approver: ${isApprover(task) ? "you" : task.approver}`)))),
       // Only shows on phones, in place of the columns.
       el("div", { class: "task-glance", role: "img", "aria-label": `Urgency ${URGENCY[task.urgency]}, status ${STATUS[task.status]}, progress ${task.progress}%${repeats(task) ? `, repeats ${task.repeat}` : ""}` },
         el("span", { class: "task-glance-line" }, el("span", { class: `dot dot-${task.urgency}` }), STATUS[task.status]),
@@ -1406,14 +1411,39 @@ async function updateTask(id, changes, focusField) {
   // are sent, so two people filling in different columns don't overwrite each other.
   const { custom: ownChanges, ...plainChanges } = changes;
   const diff = onlyChanged(task, linkStatusAndProgress(task, plainChanges));
+  // The same approver in other capitals isn't a change. A new one is picked only by whoever
+  // created the task, or the approver it has: anyone else's goes back as it was.
+  if ("approver" in diff && personKey(diff.approver) === personKey(task.approver)) delete diff.approver;
+  if ("approver" in diff && !picksApprover(task)) {
+    const message = `Only ${task.created_by}${task.approver ? ` or ${task.approver}` : ""} can change who approves this task.`;
+    const w = state.windows.get(id);
+    if (w) {
+      showWindowError(w, message);
+      w.body.querySelector('[data-field="approver"]').value = task.approver ?? "";
+    } else {
+      showSyncNote(message);
+    }
+    return;
+  }
   const own = Object.fromEntries(Object.entries(ownChanges || {}).filter(([key, value]) => String(task.custom?.[key] ?? "") !== String(value ?? "")));
   if (Object.keys(own).length) diff.custom = own;
   if (!Object.keys(diff).length) return;
 
   // Show the change straight away; the next read confirms it.
   const { custom: _own, ...plainDiff } = diff;
+  // Someone other than the approver finishing a task asks the approver instead, which the
+  // board does with what's sent. It shows here as the board will have it: still In progress,
+  // at 90% or more, and waiting for the approver. The approver deciding ends the wait.
+  const approver = "approver" in diff ? diff.approver : task.approver;
+  const asking = !!approver && personKey(approver) !== personKey(state.name) && finishes(task, diff);
+  let shown = plainDiff;
+  if (asking) {
+    shown = { ...plainDiff, status: "doing", progress: Math.min(Math.max(task.progress, 90), 99), approval_asked_by: state.name, approval_asked_at: new Date().toISOString() };
+  } else if (!approver || (personKey(approver) === personKey(state.name) && ("status" in diff || "progress" in diff)) || (plainDiff.status ?? task.status) === "done") {
+    shown = { ...plainDiff, approval_asked_by: null, approval_asked_at: null };
+  }
   const onList = !$("project-view").hidden && !!$("task-rows").querySelector(`[data-id="${CSS.escape(id)}"]`);
-  Object.assign(task, plainDiff, { updated_by: state.name, updated_at: new Date().toISOString() });
+  Object.assign(task, shown, { updated_by: state.name, updated_at: new Date().toISOString() });
   if ("project_id" in plainDiff) {
     // Moved to a project whose list it was mirrored into: it lives there now, and isn't in
     // that list by a mirror as well. Tasks mirrored into this one go where it goes.
@@ -1425,15 +1455,26 @@ async function updateTask(id, changes, focusField) {
   refreshRow(id, focusField);
   // A task marked Done on the list stays there, marked, until the filters next change,
   // rather than vanishing from under the click.
-  if (onList && "status" in plainDiff) keepInView(id);
+  if (onList && "status" in shown) keepInView(id);
   renderSummary();
   renderWindows();
   const saved = await write(() => state.store.save(id, diff), null);
+  // Said once it's saved, since a save that goes through clears this note.
+  if (saved.ok && asking) flashSyncNote(`Only ${approver} can set “${task.title}” to Done, so ${approver} has been asked to approve it.`);
   if (!saved.ok && saved.error) {
     showSyncNote(saved.error.code === "duplicate_title"
       ? "There's already a task with that name there, so the change has been undone."
-      : "That change didn't save, so it has been undone. Check your connection and try again.");
+      : saved.error.code === "approver_not_allowed"
+        ? "Only whoever created this task, or its approver, can change who approves it, so the change has been undone."
+        : "That change didn't save, so it has been undone. Check your connection and try again.");
   }
+}
+
+// Says something about a change for a while, in the note under the top bar, then clears it
+// unless something else has been said there since.
+function flashSyncNote(message) {
+  showSyncNote(message);
+  setTimeout(() => { if ($("sync-note").textContent === message) showSyncNote(null); }, 10000);
 }
 
 function fieldValue(control) {
@@ -1441,6 +1482,7 @@ function fieldValue(control) {
   if (field === "progress") return Number(control.value);
   if (field === "deadline") return control.value || null;
   if (field === "title" || field === "details") return control.value.trim();
+  if (field === "approver") return approverFrom(control.value);
   return control.value;
 }
 
@@ -1988,6 +2030,25 @@ function roleOn(task, key) {
   return personKey(mainAssignee(task)) === key ? "Main" : `Supporting ${mainAssignee(task)}`;
 }
 
+// A task can name an approver, who alone can set it to Done or 100%. Anyone else who does
+// asks the approver instead, and the task waits for them (see 038_task_approvers.sql).
+const isApprover = (task) => !!task?.approver && personKey(task.approver) === personKey(state.name);
+// Who picks a task's approver: whoever created it, or the approver it has.
+const picksApprover = (task) => personKey(task.created_by) === personKey(state.name) || isApprover(task);
+// Whether a change would finish a task, which only its approver can do.
+const finishes = (task, changes) => task.status !== "done" && (changes.status === "done" || (changes.progress === 100 && task.progress < 100));
+// What a task waiting for its approver says, in the list and its window.
+function waitingNote(task) {
+  if (!task.approver || !task.approval_asked_at) return null;
+  return isApprover(task) ? "Waiting for your approval" : `Waiting for ${task.approver}'s approval`;
+}
+// A name typed for the approver, spelled as the board already knows that person.
+function approverFrom(typed) {
+  const name = String(typed ?? "").trim().slice(0, 60);
+  if (!name) return null;
+  return [...state.people, ...state.tasks.flatMap((t) => t.assignees)].find((known) => personKey(known) === personKey(name))?.trim() || name;
+}
+
 // Names as removable tags, with a box to add more. Enter, a comma, clicking away or picking
 // a suggestion adds what's typed, and names separated by commas add together.
 // With roles, the first name is the main assignee and clicking another name puts that person
@@ -2171,6 +2232,17 @@ function taskPicker(taskId = null) {
   };
 }
 
+const APPROVER_HINT = "Optional. With an approver, only they can set this to Done or 100%.";
+
+// What the hint under a task's Approver says to this person, and whether they can change it.
+function approverHint(task) {
+  const name = task.approver;
+  const change = picksApprover(task) ? "" : name ? ` Only ${task.created_by} or ${name} can change the approver.` : ` Only ${task.created_by} can add one.`;
+  if (!name) return `${picksApprover(task) ? APPROVER_HINT : "No approver, so anyone can set this to Done."}${change}`;
+  if (isApprover(task)) return "You're the approver: only you can set this to Done or 100%.";
+  return `Only ${name} can set this to Done or 100%. If you do, ${name} is asked to approve it instead.${change}`;
+}
+
 function taskFields(assignPicker) {
   return [
     field("Task", textInput({ maxlength: "200", "data-field": "title" })),
@@ -2180,6 +2252,9 @@ function taskFields(assignPicker) {
       el("div", { class: "field" }, el("span", { class: "label", "data-col-label": "assign" }, WINDOW_LABELS.assign), assignPicker.root),
       columnField("deadline", el("input", { class: "input", type: "date", "data-field": "deadline" }),
         el("span", { class: "due-note", "data-deadline-note": true }))),
+    // Who has to approve it before it counts as done. Its window says who may change it.
+    field("Approver", textInput({ class: "input approver-input", maxlength: "60", list: "people-list", placeholder: "Nobody", "aria-label": "Approver", "data-field": "approver" }),
+      el("span", { class: "hint approver-hint", "data-approver-hint": true }, APPROVER_HINT)),
     el("div", { class: "field-row" },
       columnField("urgency", optionsSelect("urgency", URGENCY)),
       columnField("status", optionsSelect("status", STATUS))),
@@ -2996,6 +3071,8 @@ function buildTaskWindow(w, task) {
     detailsField,
     // Whose focus task this is, when it's someone's.
     el("p", { class: "focus-for", "data-focus-for": true, hidden: true }),
+    // While it waits for its approver: who asked, and for the approver, a way to approve it.
+    el("div", { class: "approval-note", role: "status", "data-approval-note": true, hidden: true }),
     // While its project is archived: what's written here reaches nobody's notifications.
     el("p", { class: "archived-task-note", role: "note", "data-archived-note": true, hidden: true }, ARCHIVED_TASK_NOTE),
     // Outside the sections, so it shows whichever of them is folded away.
@@ -3129,6 +3206,26 @@ function removeButton(attachment) {
   return el("button", { class: "win-remove", type: "button", "data-remove": attachment.id, "data-kind": attachment.kind, "aria-label": `Remove ${attachment.title}` }, "Remove");
 }
 
+// Says a task is waiting for its approver: to the approver, who asked and a button to
+// approve it; to everyone else, whom it's waiting for. Rebuilt only when that changes, so
+// the button keeps the keyboard's place.
+function renderApprovalNote(w, task) {
+  const note = w.body.querySelector("[data-approval-note]");
+  const waiting = waitingNote(task);
+  const asker = personKey(task.approval_asked_by) === personKey(state.name) ? "You" : task.approval_asked_by;
+  const signature = JSON.stringify([waiting, asker, task.approval_asked_at && timeAgo(task.approval_asked_at)]);
+  if (note.dataset.sig === signature) return;
+  note.dataset.sig = signature;
+  note.hidden = !waiting;
+  if (!waiting) return note.replaceChildren();
+  const kind = task.parent_id ? "subtask" : "task";
+  const asked = `${asker} asked ${timeAgo(task.approval_asked_at)}.`;
+  note.replaceChildren(...(isApprover(task)
+    ? [el("span", {}, `${asker} asked you to approve this ${kind}, ${timeAgo(task.approval_asked_at)}. Set it to Done to approve it, or change its status or progress to send it back.`),
+      el("button", { class: "btn btn-primary btn-small", type: "button", "data-approve": true }, "Approve and mark done")]
+    : [el("span", {}, `${waiting}. ${asked}`)]));
+}
+
 function renderTaskWindow(w) {
   const task = findTask(w.taskId);
   const title = task.parent_id ? `Subtask: ${task.title}` : task.title;
@@ -3159,9 +3256,18 @@ function renderTaskWindow(w) {
     focusFor.textContent = focusers.length ? `★ A focus task for ${nameList(focusers)}` : "";
   }
   w.mirrorPicker?.render();
+  // The approver, which only some people can change, and a task waiting for them.
+  setFieldValue(w, "approver", task.approver);
+  const approverBox = w.body.querySelector('[data-field="approver"]');
+  approverBox.disabled = !picksApprover(task);
+  const hint = approverHint(task);
+  const hintEl = w.body.querySelector("[data-approver-hint]");
+  if (hintEl.textContent !== hint) hintEl.textContent = hint;
+  renderApprovalNote(w, task);
   // The gist of the folded section, for its heading: who, when, how urgent, how far along.
   const gist = [
     task.assignees.length ? assigneeText(task) : "Unassigned",
+    task.approver && `Approver: ${task.approver}`,
     deadlineNote(task)?.text || (task.deadline ? formatDay(parseDate(task.deadline)) : null),
     URGENCY[task.urgency],
     STATUS[task.status],
@@ -3220,7 +3326,7 @@ function renderTaskWindow(w) {
   // mirrored in, which is renamed and deleted where it lives. While one is being renamed the
   // list is left as it is, so the box and what's typed survive the board refreshing.
   const ownSubtask = (s) => !held.has(s.id) && s.parent_id === task.id && personKey(s.created_by) === personKey(state.name);
-  renderList(w, "subtasks", w.editingSubtask ? ["editing", w.editingSubtask] : subtasks.map((s) => [s.id, s.title, s.assignees, s.status, deadlineNote(s)?.text, from(s), myReminder(s.id)?.remind_at, ownSubtask(s)]), () =>
+  renderList(w, "subtasks", w.editingSubtask ? ["editing", w.editingSubtask] : subtasks.map((s) => [s.id, s.title, s.assignees, s.status, deadlineNote(s)?.text, from(s), myReminder(s.id)?.remind_at, ownSubtask(s), waitingNote(s)]), () =>
     subtasks.length ? subtasks.map((s) => {
       const due = deadlineNote(s);
       if (w.editingSubtask === s.id) return el("li", { class: "win-item is-editing", "data-subtask-row": s.id }, subtaskEditForm(s));
@@ -3235,6 +3341,7 @@ function renderTaskWindow(w) {
         // Nobody's on it yet: one click takes it on, whoever created the task or the subtask.
         !s.assignees.length && el("button", { class: "link-btn win-meta", type: "button", "data-assign-me": s.id, "aria-label": `Assign ${s.title} to me` }, "Assign to me"),
         due && el("span", { class: `due-note due-${due.tone}` }, due.text),
+        waitingNote(s) && el("span", { class: "win-meta task-approval is-waiting" }, waitingNote(s)),
         // A reminder to yourself about this subtask. Not on a task that's only mirrored in.
         !held.has(s.id) && reminderButton(s),
         ownSubtask(s) && el("span", { class: "own-actions subtask-actions" },
@@ -3457,6 +3564,7 @@ async function onWindowSubmit(w, event) {
 
 function onWindowClick(w, event) {
   const target = event.target;
+  if (target.closest("[data-approve]")) return updateTask(w.taskId, { status: "done" });
   const remind = target.closest("[data-remind]");
   if (remind) return openReminder(remind.dataset.remind);
   const editSubtask = target.closest("[data-edit-subtask]");
@@ -3800,6 +3908,7 @@ async function submitNewTask(w, event) {
     deadline: value("deadline") || (value("repeat") === "none" ? null : firstDeadline(value("repeat"))),
     urgency: value("urgency"),
     repeat: value("repeat"),
+    ...(value("approver") ? { approver: value("approver") } : {}),
   };
   const button = w.body.querySelector('button[type="submit"]');
   button.disabled = true;
@@ -5610,6 +5719,9 @@ function notificationLines(n) {
     const task = findTask(n.task_id);
     return [`Reminder: your ${task && repeats(task) ? task.repeat : "repeating"} task is open again`, [n.title, `due ${formatDay(parseDate(n.due_on))}`, n.project_name]];
   }
+  // This person approves the task: only they can set it to Done.
+  if (n.action === "approver") return [`${n.by_name} made you the approver of a ${n.kind}`, where, "Only you can set it to Done."];
+  if (n.action === "approval") return [`${n.by_name} asked you to approve a ${n.kind}`, where, "Set it to Done to approve it."];
   if (n.action !== "deleted") {
     // On a task several people are on, what this person is on it now: the main, or support.
     const role = roleOn(findTask(n.task_id) || { assignees: [] }, personKey(state.name));
