@@ -1,6 +1,9 @@
 "use strict";
 
-const STATUS = { todo: "To do", doing: "In progress", done: "Done" };
+const STATUS = { todo: "To do", doing: "In progress", on_hold: "On hold", done: "Done", cancelled: "Cancelled" };
+// Done and Cancelled close a task. On hold pauses one that's still open: it's still on its
+// people, but it isn't overdue and gets no due reminder (supabase/039_hold_and_cancel.sql).
+const isClosed = (task) => task?.status === "done" || task?.status === "cancelled";
 const URGENCY = { low: "Low", normal: "Normal", high: "High", critical: "Critical" };
 const REPEATS = { none: "One time", weekly: "Weekly", monthly: "Monthly" };
 // The task list's standard columns, in order. A project can rename or hide them and add
@@ -57,7 +60,7 @@ const SESSION_KEY = WANTS_DEMO ? "board.session.demo" : "board.session";
 const NAME_KEY = "board.lastName";
 const FILTER_KEY = "board.assigneeFilter";
 const STATUS_FILTER_KEY = "board.statusFilter";
-const STATUSES_SHOWN_AT_FIRST = ["todo", "doing"]; // Done is left out until someone ticks it
+const STATUSES_SHOWN_AT_FIRST = ["todo", "doing", "on_hold"]; // Done and Cancelled are left out until someone ticks them
 const FILTER_MENUS = ["filter", "status-filter"]; // the dropdowns above the list, by how their ids start
 
 const state = {
@@ -120,11 +123,17 @@ function readFilter() {
   }
 }
 
-// What this browser last chose to show, or To do and In progress if it never chose.
+// What this browser last chose to show, or the open statuses if it never chose. A status it
+// didn't know of when it chose shows as it would at first: On hold does, Cancelled doesn't.
+// A choice made before On hold and Cancelled was kept as a plain list of what showed.
 function readStatusFilter() {
   try {
     const saved = JSON.parse(readStorage("localStorage", STATUS_FILTER_KEY));
-    if (Array.isArray(saved)) return Object.keys(STATUS).filter((key) => saved.includes(key));
+    const shown = Array.isArray(saved) ? saved : saved?.shown;
+    if (Array.isArray(shown)) {
+      const known = Array.isArray(saved) ? ["todo", "doing", "done"] : Array.isArray(saved.of) ? saved.of : Object.keys(STATUS);
+      return Object.keys(STATUS).filter((key) => (known.includes(key) ? shown.includes(key) : STATUSES_SHOWN_AT_FIRST.includes(key)));
+    }
   } catch {}
   return [...STATUSES_SHOWN_AT_FIRST];
 }
@@ -209,6 +218,7 @@ function firstDeadline(repeat) {
 // What a repeating task will do next, in a line under its Repeats choice.
 function repeatNote(task) {
   if (!repeats(task)) return "";
+  if (task.status === "cancelled") return "Cancelled, so it doesn't reopen. Set another status to bring it back.";
   if (task.status !== "done") return `Reopens each ${task.repeat === "weekly" ? "week" : "month"} once it's done and its deadline has passed.`;
   return `Done for this round. It reopens ${task.deadline && daysUntil(task.deadline) < 0 ? "tomorrow" : "the day after its deadline"}.`;
 }
@@ -223,9 +233,10 @@ function formatSize(bytes) {
 }
 const clamp = (value, low, high) => Math.min(Math.max(value, low), Math.max(low, high));
 
-// The short warning shown under a deadline. Finished tasks and distant dates get none.
+// The short warning shown under a deadline. Finished, cancelled or on-hold tasks and
+// distant dates get none.
 function deadlineNote(task) {
-  if (!task.deadline || task.status === "done") return null;
+  if (!task.deadline || isClosed(task) || task.status === "on_hold") return null;
   const days = daysUntil(task.deadline);
   if (days < 0) return { text: `Overdue by ${-days} d`, tone: "overdue" };
   if (days === 0) return { text: "Due today", tone: "today" };
@@ -240,11 +251,13 @@ function linkStatusAndProgress(task, changes) {
   if ("status" in changes && !("progress" in changes)) {
     if (changes.status === "done") linked.progress = 100;
     else if (changes.status === "todo") linked.progress = 0;
+    else if (changes.status === "cancelled") { /* keeps how far it got */ }
     else if (task.progress === 100) linked.progress = 90; // reopened: no longer complete
   } else if ("progress" in changes && !("status" in changes)) {
+    // A task on hold or cancelled stays so while its progress moves, until it reaches 100%.
     if (changes.progress === 100) linked.status = "done";
     else if (changes.progress === 0 && task.status === "done") linked.status = "todo";
-    else if (changes.progress > 0 && task.status !== "doing") linked.status = "doing";
+    else if (changes.progress > 0 && (task.status === "todo" || task.status === "done")) linked.status = "doing";
   }
   return linked;
 }
@@ -962,11 +975,20 @@ function saveOwnValue(taskId, control, focusKey) {
   updateTask(taskId, { custom: { [field.id]: value } }, focusKey);
 }
 
+// How many of some subtasks are done, of those not cancelled: "2/3".
+function subtaskTally(subtasks) {
+  const counted = subtasks.filter((s) => s.status !== "cancelled");
+  return `${counted.filter((s) => s.status === "done").length}/${counted.length}`;
+}
+
+// What a People tab's fold of closed work is called: Done, unless some of it was cancelled.
+const closedLabel = (tasks) => (tasks.some((t) => t.status === "cancelled") ? "Done and cancelled" : "Done");
+
 // A task's subtasks, and the tasks mirrored into it, which count as part of it.
 function subtaskSummary(task) {
   const subtasks = [...subtasksOf(task.id), ...heldBy(task.id)];
   if (!subtasks.length) return "";
-  return ` · ${subtasks.filter((s) => s.status === "done").length}/${subtasks.length} subtasks`;
+  return ` · ${subtaskTally(subtasks)} subtasks`;
 }
 
 function rowSignature(task) {
@@ -1096,9 +1118,11 @@ function sheetFitRule(needed) {
 // The count by the board's name: this project's open tasks on its page, archived or not,
 // and everywhere else the open tasks of every project that isn't archived.
 function renderSummary() {
-  const open = state.tasks.filter((t) => !t.parent_id && t.status !== "done" && (state.projectId ? isListedIn(t, state.projectId) : !inArchive(t)));
-  const overdue = open.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
-  const today = open.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
+  const open = state.tasks.filter((t) => !t.parent_id && !isClosed(t) && (state.projectId ? isListedIn(t, state.projectId) : !inArchive(t)));
+  // A task on hold isn't overdue or due.
+  const running = open.filter((t) => t.status !== "on_hold");
+  const overdue = running.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
+  const today = running.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
   const parts = [el("span", {}, `${open.length} open`)];
   if (overdue) parts.push(" · ", el("span", { class: "is-overdue" }, `${overdue} overdue`));
   if (today) parts.push(" · ", el("span", {}, `${today} due today`));
@@ -1175,14 +1199,15 @@ const statusesAsAtFirst = () => state.statusFilter.length === STATUSES_SHOWN_AT_
 function setStatusFilter(keys) {
   state.statusFilter = Object.keys(STATUS).filter((key) => keys.includes(key));
   // Nothing is kept for the usual choice, so a browser that never changed it follows the default.
-  writeStorage("localStorage", STATUS_FILTER_KEY, statusesAsAtFirst() ? null : JSON.stringify(state.statusFilter));
+  // It says which statuses there were, so one added later can show as it would at first.
+  writeStorage("localStorage", STATUS_FILTER_KEY, statusesAsAtFirst() ? null : JSON.stringify({ shown: state.statusFilter, of: Object.keys(STATUS) }));
   state.keepShown.clear();
   renderRows();
 }
 
 function statusSummary() {
   if (allStatusesShown()) return "All";
-  if (statusesAsAtFirst()) return "Not done";
+  if (statusesAsAtFirst()) return "Open";
   return state.statusFilter.map((key) => STATUS[key]).join(", ") || "None";
 }
 
@@ -3321,7 +3346,7 @@ function renderTaskWindow(w) {
   const held = new Set(heldBy(task.id).map((t) => t.id));
   const subtasks = [...subtasksOf(task.id), ...heldBy(task.id)];
   const from = (s) => (held.has(s.id) ? findProject(s.project_id)?.name || "" : null);
-  setCount(w, "subtasks", subtasks.length ? `${subtasks.filter((s) => s.status === "done").length}/${subtasks.length}` : "");
+  setCount(w, "subtasks", subtasks.length ? subtaskTally(subtasks) : "");
   // Whoever created a subtask can rename it or delete it from here. Not a task that's only
   // mirrored in, which is renamed and deleted where it lives. While one is being renamed the
   // list is left as it is, so the box and what's typed survive the board refreshing.
@@ -3333,7 +3358,9 @@ function renderTaskWindow(w) {
       return el("li", { class: `win-item${held.has(s.id) ? " is-mirrored" : ""}`, "data-subtask-row": s.id },
         el("input", { type: "checkbox", "data-done": s.id, checked: s.status === "done", "aria-label": `Mark ${s.title} done` }),
         el("span", { class: "win-item-main" },
-          el("button", { class: `link-btn${s.status === "done" ? " subtask-done" : ""}`, type: "button", "data-open-task": s.id }, s.title)),
+          el("button", { class: `link-btn${isClosed(s) ? " subtask-done" : ""}`, type: "button", "data-open-task": s.id }, s.title),
+          // On hold or cancelled says so, since the box only says done or not.
+          s.status === "on_hold" || s.status === "cancelled" ? el("span", { class: `status-tag status-tag-${s.status}` }, STATUS[s.status]) : null),
         held.has(s.id) && el("span", { class: "mirror-from" }, `Mirrored from ${from(s)}`),
         s.assignees.length
           ? el("span", { class: "win-meta" }, assigneeText(s))
@@ -5295,7 +5322,7 @@ const URGENCY_ORDER = ["critical", "high", "normal", "low"];
 function workload() {
   // What's in an archived project isn't anyone's load while it's put away.
   const live = state.tasks.filter((t) => !inArchive(t));
-  const open = live.filter((t) => t.status !== "done");
+  const open = live.filter((t) => !isClosed(t));
   const done = live.filter((t) => t.status === "done");
   const has = (task, key) => task.assignees.some((name) => personKey(name) === key);
   const rank = (task) => URGENCY_ORDER.indexOf(task.urgency);
@@ -5306,7 +5333,7 @@ function workload() {
       key, name, levels, done: doneCount,
       tasks: [...tasks].sort(mostUrgentFirst),
       urgent: levels.critical + levels.high,
-      overdue: tasks.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length,
+      overdue: tasks.filter((t) => t.status !== "on_hold" && t.deadline && daysUntil(t.deadline) < 0).length,
     };
   };
   const people = peopleFrom([...state.people, ...state.tasks.flatMap((t) => t.assignees)])
@@ -5341,10 +5368,10 @@ $("people-tab-subtasks").addEventListener("click", () => setPeopleView("subtasks
 function renderMySubtasks() {
   const me = personKey(state.name);
   const mine = tasksInOrder().filter((t) => t.parent_id && !inArchive(t) && t.assignees.some((name) => personKey(name) === me));
-  const pending = mine.filter((t) => t.status !== "done");
-  const done = mine.filter((t) => t.status === "done");
-  const overdue = pending.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
-  const today = pending.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
+  const pending = mine.filter((t) => !isClosed(t));
+  const done = mine.filter(isClosed);
+  const overdue = pending.filter((t) => t.status !== "on_hold" && t.deadline && daysUntil(t.deadline) < 0).length;
+  const today = pending.filter((t) => t.status !== "on_hold" && t.deadline && daysUntil(t.deadline) === 0).length;
   $("people-summary").textContent = [`${pending.length} pending`, overdue && `${overdue} overdue`, today && `${today} due today`].filter(Boolean).join(" · ");
 
   // What each subtask shows, grouped by project, then by the task it's part of.
@@ -5359,10 +5386,10 @@ function renderMySubtasks() {
       if (!task) project.tasks.push(task = { id: s.parent_id, title: parent?.title || "", about: parent ? [assigneeText(parent), STATUS[parent.status]].filter(Boolean).join(" · ") : "", subtasks: [] });
       const reminder = myReminder(s.id);
       task.subtasks.push({
-        id: s.id, title: s.title, urgency: s.urgency, done: s.status === "done",
+        id: s.id, title: s.title, urgency: s.urgency, done: isClosed(s),
         // On a subtask several people are on, whether this person is the main or supporting, and whom.
         about: [roleOn(s, me), STATUS[s.status], `${s.progress}%`].filter(Boolean).join(" · "),
-        due: s.status === "done" ? null : deadlineNote(s),
+        due: deadlineNote(s),
         reminder: reminder ? reminderWhen(reminder) : null,
       });
     }
@@ -5396,7 +5423,7 @@ function renderMySubtasks() {
       ? groups(view.pending)
       : [el("p", { class: "win-empty" }, done.length ? "Nothing pending." : "You have no subtasks. One shows here once it's assigned to you. To take one on yourself, open any task and choose Assign to me under Subtasks.")]),
     done.length > 0 && el("details", { class: "mine-done", open: doneOpen },
-      el("summary", {}, `Done (${done.length})`),
+      el("summary", {}, `${closedLabel(done)} (${done.length})`),
       ...groups(view.done)),
   ].filter(Boolean));
 }
@@ -5432,24 +5459,24 @@ function renderMyTasks() {
   const rank = (t) => URGENCY_ORDER.indexOf(t.urgency);
   const mostUrgentFirst = (a, b) => rank(a) - rank(b) || (a.deadline || "9999").localeCompare(b.deadline || "9999") || a.title.localeCompare(b.title);
   const mine = state.tasks.filter((t) => !t.parent_id && !inArchive(t) && t.assignees.some((name) => personKey(name) === me));
-  const open = mine.filter((t) => t.status !== "done").sort(mostUrgentFirst);
-  const done = mine.filter((t) => t.status === "done").sort((a, b) => String(b.done_at || "").localeCompare(String(a.done_at || "")));
+  const open = mine.filter((t) => !isClosed(t)).sort(mostUrgentFirst);
+  const done = mine.filter(isClosed).sort((a, b) => String(b.done_at || b.updated_at || "").localeCompare(String(a.done_at || a.updated_at || "")));
   const focus = focusIdsOf(me).filter((id) => open.some((t) => t.id === id));
-  const overdue = open.filter((t) => t.deadline && daysUntil(t.deadline) < 0).length;
-  const today = open.filter((t) => t.deadline && daysUntil(t.deadline) === 0).length;
+  const overdue = open.filter((t) => t.status !== "on_hold" && t.deadline && daysUntil(t.deadline) < 0).length;
+  const today = open.filter((t) => t.status !== "on_hold" && t.deadline && daysUntil(t.deadline) === 0).length;
   $("people-summary").textContent = [`${open.length} open`, overdue && `${overdue} overdue`, today && `${today} due today`, `${focus.length} of ${MAX_FOCUS} focus`].filter(Boolean).join(" · ");
 
   const rowView = (t) => ({
     id: t.id,
     title: t.title,
     urgency: t.urgency,
-    done: t.status === "done",
+    done: isClosed(t),
     focus: focus.includes(t.id),
     // On a task several people are on, whether this person is the main or supporting, and whom.
     about: [URGENCY[t.urgency], state.projects.find((p) => p.id === t.project_id)?.name, roleOn(t, me), STATUS[t.status], `${t.progress}%`].filter(Boolean).join(" · "),
-    due: t.status === "done" ? null : deadlineNote(t),
+    due: deadlineNote(t),
   });
-  const view = { focus: focus.map((id) => rowView(findTask(id))), open: open.map(rowView), done: done.map(rowView), note: state.focusNote };
+  const view = { focus: focus.map((id) => rowView(findTask(id))), open: open.map(rowView), done: done.map(rowView), doneLabel: closedLabel(done), note: state.focusNote };
 
   // Only rebuilds when something shows differently, so the Done group and keyboard focus survive a refresh.
   const box = $("my-tasks");
@@ -5484,7 +5511,7 @@ function renderMyTasks() {
         ? el("ul", { class: "my-task-list" }, ...view.open.map(row))
         : el("p", { class: "win-empty" }, view.done.length ? "Nothing open." : "You have no tasks. One shows here once it's assigned to you. Subtasks are on their own tab.")),
     view.done.length > 0 && el("details", { class: "mine-done", open: doneOpen },
-      el("summary", {}, `Done (${view.done.length})`),
+      el("summary", {}, `${view.doneLabel} (${view.done.length})`),
       el("ul", { class: "my-task-list" }, ...view.done.map(row))),
   ].filter(Boolean));
 }

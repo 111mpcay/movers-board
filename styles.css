@@ -554,6 +554,9 @@ body::before {
 .dot-critical { background: var(--critical); box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--critical); }
 .dot-done { background: var(--green); }
 .dot-todo { background: transparent; border: 2px solid var(--dot-grey); }
+/* On hold: a pause sign in an orange ring. Cancelled: a grey ring struck through. */
+.dot-on_hold { background: linear-gradient(90deg, transparent 28%, var(--dot-orange) 28% 43%, transparent 43% 57%, var(--dot-orange) 57% 72%, transparent 72%); border: 2px solid var(--dot-orange); }
+.dot-cancelled { background: linear-gradient(135deg, transparent 42%, var(--dot-grey) 42% 58%, transparent 58%); border: 2px solid var(--dot-grey); }
 .plain-select {
   width: 92px;
   padding: 4px 14px 4px 2px;
@@ -1440,6 +1443,10 @@ summary.code-head:focus-visible { outline-offset: -2px; border-radius: 8px; }
 .col-own-choices .input { display: block; width: 100%; resize: vertical; }
 .spacer { flex: 1; }
 .subtask-done { text-decoration: line-through; color: var(--muted); }
+/* A subtask on hold or cancelled says so beside its name. */
+.status-tag { margin-left: 6px; padding: 0 6px; font-size: 0.74rem; font-weight: 600; white-space: nowrap; border-radius: 9px; }
+.status-tag-on_hold { color: var(--orange); border: 1px solid var(--dot-orange); }
+.status-tag-cancelled { color: var(--muted); border: 1px solid var(--line); }
 
 .window-tray {
   position: fixed;
