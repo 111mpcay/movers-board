@@ -1290,6 +1290,28 @@ summary.code-head:focus-visible { outline-offset: -2px; border-radius: 8px; }
 }
 .win.is-front .win-bar { background: var(--navy); }
 .win-title { flex: 1; min-width: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* What the window is for: a Task, a Subtask or a Meeting, each with its own colour on the
+   label and as a stripe under the title bar, so one can't be taken for another. The same
+   label goes on the window's chip when it's minimized. */
+.win[data-kind="task"], .win-chip[data-kind="task"] { --kind: var(--orange); }
+.win[data-kind="subtask"], .win-chip[data-kind="subtask"] { --kind: #0d8a7c; }
+.win[data-kind="meeting"], .win-chip[data-kind="meeting"] { --kind: #6f4bd8; }
+.win[data-kind] .win-bar { box-shadow: inset 0 -4px 0 var(--kind); padding-bottom: 10px; }
+.win-kind {
+  flex: none;
+  display: inline-block;
+  padding: 3px 8px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #ffffff;
+  background: var(--kind);
+  border-radius: 4px;
+}
+.win-kind[hidden] { display: none; }
+.win-chip .win-kind { margin-right: 7px; padding: 2px 6px; font-size: 0.64rem; vertical-align: 1px; }
 .win-btn {
   flex: none;
   width: 30px;

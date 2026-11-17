@@ -1867,7 +1867,7 @@ function closeAllWindows() {
 function minimizeWindow(w) {
   w.root.hidden = true;
   w.hasEntry = false;
-  w.chip = el("button", { class: "win-chip", type: "button" }, w.titleEl.textContent);
+  w.chip = el("button", { class: "win-chip", type: "button", "data-kind": w.kind || false }, ...chipContent(w));
   w.chip.addEventListener("click", () => showWindow(w));
   $("window-tray").append(w.chip);
 }
@@ -1914,12 +1914,41 @@ window.addEventListener("popstate", (event) => {
   else if (leftEntryHref === location.href && $("gate").hidden) history.back();
 });
 
-function createWindow(key, title) {
+// What a window is for, shown as a coloured label at the start of its title bar (and on its
+// minimized chip) so a task, a subtask and a meeting can't be mistaken for one another.
+const WINDOW_KINDS = { task: "Task", subtask: "Subtask", meeting: "Meeting" };
+
+// The window's title, with its kind in front of it for screen readers.
+function setWindowTitle(w, title) {
+  w.titleEl.textContent = title;
+  w.root.setAttribute("aria-label", w.kind ? `${WINDOW_KINDS[w.kind]}: ${title}` : title);
+  if (w.chip) w.chip.replaceChildren(...chipContent(w));
+}
+
+function setWindowKind(w, kind) {
+  w.kind = WINDOW_KINDS[kind] ? kind : null;
+  if (w.kind) w.root.dataset.kind = w.kind;
+  else delete w.root.dataset.kind;
+  w.kindEl.textContent = w.kind ? WINDOW_KINDS[w.kind] : "";
+  w.kindEl.hidden = !w.kind;
+  if (w.chip) {
+    if (w.kind) w.chip.dataset.kind = w.kind;
+    else delete w.chip.dataset.kind;
+  }
+  setWindowTitle(w, w.titleEl.textContent);
+}
+
+function chipContent(w) {
+  return [w.kind && el("span", { class: "win-kind" }, WINDOW_KINDS[w.kind]), el("span", { class: "win-chip-title" }, w.titleEl.textContent)];
+}
+
+function createWindow(key, title, kind = null) {
   const titleEl = el("span", { class: "win-title" }, title);
+  const kindEl = el("span", { class: "win-kind", hidden: true });
   const back = el("button", { class: "win-back", type: "button" }, "‹ Back");
   const minimize = el("button", { class: "win-btn", type: "button", "aria-label": "Minimize" }, "–");
   const close = el("button", { class: "win-btn win-close", type: "button", "aria-label": "Close" }, "×");
-  const bar = el("header", { class: "win-bar" }, back, titleEl, minimize, close);
+  const bar = el("header", { class: "win-bar" }, back, kindEl, titleEl, minimize, close);
   const body = el("div", { class: "win-body" });
   const grip = el("div", { class: "win-grip", "aria-hidden": "true" });
   const root = el("section", { class: "win", role: "dialog", "aria-label": title, tabindex: "-1" }, bar, body, grip);
@@ -1930,13 +1959,14 @@ function createWindow(key, title) {
   let step = 0;
   while (taken.has(step) && step < 5) step += 1;
   const w = {
-    key, root, body, titleEl, chip: null, step,
+    key, root, body, titleEl, kindEl, chip: null, step,
     x: 48 + step * 32,
     y: 70 + step * 28,
     width: 500,
     height: window.innerHeight - 110,
   };
   w.height = Math.min(w.height, 680);
+  setWindowKind(w, kind);
   $("windows").append(root);
   state.windows.set(key, w);
   placeWindow(w);
@@ -2456,7 +2486,7 @@ function openTask(id) {
   if (!task) return;
   let w = state.windows.get(id);
   if (!w) {
-    w = createWindow(id, task.title);
+    w = createWindow(id, task.title, task.parent_id ? "subtask" : "task");
     w.taskId = id;
     w.uploading = [];
     buildTaskWindow(w, task);
@@ -3253,10 +3283,8 @@ function renderApprovalNote(w, task) {
 
 function renderTaskWindow(w) {
   const task = findTask(w.taskId);
-  const title = task.parent_id ? `Subtask: ${task.title}` : task.title;
-  w.titleEl.textContent = title;
-  w.root.setAttribute("aria-label", title);
-  if (w.chip) w.chip.textContent = title;
+  w.titleEl.textContent = task.title;
+  setWindowKind(w, task.parent_id ? "subtask" : "task");
 
   const projectSelect = w.body.querySelector('[data-field="project_id"]');
   // The projects it can move to: the ones that aren't archived, and the one it's in.
@@ -3883,7 +3911,7 @@ async function deleteSubtask(w, button) {
 function openNewTask() {
   const existing = state.windows.get("new");
   if (existing) return showWindow(existing);
-  const w = createWindow("new", "Add task");
+  const w = createWindow("new", "Add task", "task");
   w.height = Math.min(w.height, 470);
   placeWindow(w);
   w.assignPicker = namePicker({ label: "Assign to", roles: "full" });
@@ -4600,7 +4628,7 @@ function openMeeting(id) {
   const key = `meeting:${id}`;
   let w = state.windows.get(key);
   if (!w) {
-    w = createWindow(key, meeting.title);
+    w = createWindow(key, meeting.title, "meeting");
     w.meetingId = id;
     w.height = Math.min(w.height, 620);
     placeWindow(w);
@@ -4647,9 +4675,7 @@ function buildMeetingWindow(w) {
 
 function renderMeetingWindow(w) {
   const m = findMeeting(w.meetingId);
-  w.titleEl.textContent = m.title;
-  w.root.setAttribute("aria-label", m.title);
-  if (w.chip) w.chip.textContent = m.title;
+  setWindowTitle(w, m.title);
 
   const status = meetingStatus(m);
   const statusEl = w.body.querySelector("[data-meeting-status]");
@@ -4984,7 +5010,7 @@ function openReschedule(id) {
   const key = `reschedule:${id}`;
   let w = state.windows.get(key);
   if (!w) {
-    w = createWindow(key, "Reschedule");
+    w = createWindow(key, "Reschedule", "meeting");
     w.meetingId = id;
     w.isForm = true;
     w.width = Math.min(w.width, 420);
@@ -5109,7 +5135,7 @@ function openMeetingForm({ meeting = null, day = null, person = null, task = nul
   let w = state.windows.get(key);
   const fresh = !w;
   if (!w) {
-    w = createWindow(key, meeting ? `Edit: ${meeting.title}` : "Set meeting");
+    w = createWindow(key, meeting ? `Edit: ${meeting.title}` : "Set meeting", "meeting");
     w.height = Math.min(w.height, meeting ? 756 : 896);
     placeWindow(w);
     if (meeting) {
