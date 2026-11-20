@@ -70,6 +70,9 @@ const state = {
   leavingProject: null, // a project this person is deleting, so its page goes quietly
   archiveAsk: 0, // the timer on the Archive button's "are you sure", while it's asking
   tasks: [],
+  selecting: false, // picking tasks on the list to combine
+  selected: new Set(), // the ids ticked while picking
+  selectFull: false, // the last tick was refused because that many are ticked already
   filter: readFilter(), // the people whose tasks show, as name keys; "" is unassigned, and empty shows everyone
   statusFilter: readStatusFilter(), // the statuses whose tasks show, as STATUS keys
   keepShown: new Set(), // tasks just added or changed here, which stay in view under the filters until they're next changed
@@ -388,6 +391,7 @@ function remoteStore({ supabaseUrl, supabaseKey }) {
     move: (id, position, projectId = null) => rpc("movers_move_task", { p_token: token, p_id: id, p_position: position, p_project: projectId }),
     // Everywhere a task is mirrored, as the whole list: {task_id} for inside a task, {project_id} for a project's list.
     mirrorTask: (id, targets) => rpc("movers_mirror_task", { p_token: token, p_id: id, p_targets: targets }),
+    combineTasks: (ids, title, projectId, targets, expect) => rpc("movers_combine_tasks", { p_token: token, p_ids: ids, p_title: title, p_project: projectId, p_targets: targets, p_expect: expect }),
     // `images` are the uploads to post with it, as uploadImage gave them.
     addUpdate: (id, text, mentions, images) => rpc("movers_add_task_update", { p_token: token, p_id: id, p_text: text, p_mentions: mentions || [], p_images: images || [] }),
     addComment: (taskId, body, mentions, images) => rpc("movers_add_task_comment", { p_token: token, p_task_id: taskId, p_body: body, p_mentions: mentions || [], p_images: images || [] }),
@@ -747,6 +751,39 @@ const deleteNote = (item, what) => (personKey(item.created_by) === personKey(BOA
   ? `This ${what} came with the board, so it can't be deleted.`
   : `Only ${item.created_by}, who created this ${what}, can delete it.`);
 const refusedDelete = (result) => result.error?.code === "not_creator";
+// Combining puts other people's tasks under a new one. Until they delete theirs, whoever
+// made the new task can't delete it (the board refuses). These are the people who made
+// combined work under this task, apart from the person looking.
+function othersCombined(taskId) {
+  const names = [];
+  for (const sub of subtasksOf(taskId)) {
+    if (!sub.combined_at || !sub.created_by || personKey(sub.created_by) === personKey(state.name)) continue;
+    if (!names.some((n) => personKey(n) === personKey(sub.created_by))) names.push(sub.created_by);
+  }
+  return names;
+}
+// Says who is holding a delete up. The board never deletes what it made, so its part is
+// worded as the board's own (like deleteNote's board line); real people are named, who can
+// delete theirs. Without the planner script there is no tidy list, so names are just joined.
+const holdersList = (names) => (window.MoversCombine ? window.MoversCombine.andList(names) : names.join(", "));
+function holdsOthersText(subject, names, cannot) {
+  const people = names.filter((n) => personKey(n) !== personKey(BOARD_ACTOR));
+  const board = people.length < names.length;
+  if (!people.length) return `${subject} holds tasks that came with the board, so ${cannot}.`;
+  return `${subject} holds tasks ${holdersList(people)} created, so ${cannot} until they delete theirs${board ? ", and the tasks that came with the board can't be deleted" : ""}.`;
+}
+const holdsOthersNote = (names) => holdsOthersText("This", names, "it can't be deleted");
+const holdsOthersProjectNote = (title, names) => holdsOthersText(`“${title}”`, names, "this project can't be deleted");
+// What sits at the foot of a task window: the Delete button, or the reason there isn't one.
+function taskDeleteBlock(task) {
+  const isSubtask = Boolean(task.parent_id);
+  const names = !isSubtask && canDelete(task) ? othersCombined(task.id) : [];
+  if (!canDelete(task) || names.length) {
+    const text = names.length ? holdsOthersNote(names) : deleteNote(task, isSubtask ? "subtask" : "task");
+    return el("p", { class: "delete-note", "data-delete-note": true, "data-sig": `note:${text}` }, text);
+  }
+  return el("button", { class: "btn btn-danger", type: "button", "data-delete-task": true, "data-sig": "button" }, isSubtask ? "Delete this subtask" : "Delete this task");
+}
 
 function showProjectError(id, message) {
   $(id).textContent = message || "";
@@ -776,6 +813,7 @@ window.addEventListener("hashchange", () => {
   showProjectError("project-error", null);
   setRenaming(false);
   askToArchive(false); // a question asked on one project's page isn't carried to the next
+  setSelecting(false); // ticks made on one list mean nothing on another
   renderBoard();
   window.scrollTo(0, 0);
 });
@@ -882,6 +920,13 @@ $("delete-project-btn").addEventListener("click", async () => {
   const moving = new Set(living.filter((t) => elsewhere(t).length).map((t) => t.id));
   const count = living.length - moving.size;
   const plural = (n, word) => (n === 1 ? `1 ${word}` : `${n} ${word}s`);
+  // The board refuses to delete combined work someone else made, so say so before asking.
+  // Tasks that move to another project aren't deleted, so they don't count.
+  for (const t of living.filter((t) => !moving.has(t.id))) {
+    const names = othersCombined(t.id);
+    if (names.length) return showProjectError("project-error", holdsOthersProjectNote(t.title, names));
+  }
+  showProjectError("project-error", "");
   const warning = [
     count ? `Delete it and its ${plural(count, "task")} for everyone?` : living.length ? "Delete this project?" : "Delete this empty project?",
     moving.size ? `${plural(moving.size, "mirrored task")} ${moving.size === 1 ? "moves" : "move"} to another project.` : "",
@@ -914,7 +959,10 @@ $("delete-project-btn").addEventListener("click", async () => {
   } else {
     state.leavingProject = null;
     going.forEach((w) => { w.deleting = false; });
-    showProjectError("project-error", refusedDelete(result) ? "Only whoever created this project can delete it." : "That project wasn't deleted. Check your connection and try again.");
+    const blocker = result.error?.code === "holds_others_work" && living.find((t) => !moving.has(t.id) && othersCombined(t.id).length);
+    showProjectError("project-error", blocker ? holdsOthersProjectNote(blocker.title, othersCombined(blocker.id))
+      : result.error?.code === "holds_others_work" ? "This project holds tasks someone else created, so it can't be deleted until they delete theirs."
+      : refusedDelete(result) ? "Only whoever created this project can delete it." : "That project wasn't deleted. Check your connection and try again.");
   }
 });
 
@@ -996,7 +1044,7 @@ function rowSignature(task) {
     task.title, task.assignees, task.urgency, task.deadline, task.repeat, task.status, task.progress,
     task.updated_by, timeAgo(task.updated_at), deadlineNote(task)?.text, subtaskSummary(task),
     task.custom, state.columnsSig, mirrorNote(task, state.projectId), focusNames(task.id),
-    task.approver, waitingNote(task),
+    task.approver, waitingNote(task), state.selecting, state.selected.has(task.id),
   ]);
 }
 
@@ -1058,8 +1106,11 @@ function renderRow(task) {
       ? cell(column, ownControl(column.field, task.custom?.[column.id], true, label))
       : cell(column, ...STANDARD_CELLS[column.id](task, label));
   });
-  const row = el("div", { class: "task-row", role: "row", "data-id": task.id, "data-sig": rowSignature(task) },
+  const picked = state.selecting && state.selected.has(task.id);
+  const row = el("div", { class: `task-row${picked ? " is-selected" : ""}`, role: "row", "data-id": task.id, "data-sig": rowSignature(task) },
     el("div", { class: "task-cell", role: "cell" },
+      // While picking tasks to combine, a tick box leads the row.
+      state.selecting && el("input", { class: "select-box", type: "checkbox", "data-select": "", checked: picked, "aria-label": `Select ${task.title}` }),
       el("span", { class: "grip", "aria-hidden": "true" }),
       el("div", { class: "task-text" },
         el("button", { class: "task-title", type: "button" }, task.title),
@@ -1299,6 +1350,9 @@ function renderRows() {
   // The tasks the filters leave out. Any just added or changed here still show, marked.
   const outside = new Set(inProject.filter((t) => !forPeople(t) || !statusShown(t)).map((t) => t.id));
   const tasks = inProject.filter((t) => !outside.has(t.id) || state.keepShown.has(t.id));
+  // A tick on a task the filters now hide would still be combined, unseen, so it goes.
+  const shownIds = new Set(tasks.map((t) => t.id));
+  state.selected.forEach((id) => { if (!shownIds.has(id)) state.selected.delete(id); });
   // Each dropdown counts within what the other one lets through.
   renderFilter(inProject.filter(statusShown));
   renderStatusFilter(inProject.filter(forPeople));
@@ -1329,9 +1383,60 @@ function renderRows() {
     if (row === cursor) cursor = cursor.nextElementSibling;
     else list.insertBefore(row, cursor);
     row.classList.toggle("is-outside-filter", outside.has(task.id));
+    // The row being used keeps its place on a redraw, so its tick is brought up to date here.
+    const picked = state.selecting && state.selected.has(task.id);
+    row.classList.toggle("is-selected", picked);
+    const box = row.querySelector("[data-select]");
+    if (box) box.checked = picked;
   }
   if (focused?.isConnected && document.activeElement !== focused) focused.focus();
+  renderSelectBar();
 }
+
+// ---------- Picking tasks to combine ----------
+
+// Starts or ends picking. Either way nothing stays ticked, and the list is drawn again with
+// or without its tick boxes. Dragging rows is off while picking. The Combine window is for
+// what was ticked, so it goes when picking ends, whatever was typed in it.
+function setSelecting(on) {
+  state.selecting = on;
+  state.selected.clear();
+  state.selectFull = false;
+  const combining = state.windows.get("combine");
+  if (!on && combining) closeWindow(combining);
+  document.body.classList.toggle("is-selecting", on);
+  state.rowsSortable?.option("disabled", on);
+  if (state.projectId) renderRows();
+  else renderSelectBar();
+}
+
+// Ticks or unticks a task. Past the most that can be combined at once, it says so instead.
+function toggleSelected(id) {
+  state.selectFull = false;
+  if (state.selected.has(id)) state.selected.delete(id);
+  else if (state.selected.size >= (window.MoversCombine?.MAX ?? 50)) state.selectFull = true;
+  else state.selected.add(id);
+  renderRows();
+}
+
+// The bar above the list while picking: how many are ticked, and Combine once there are two.
+function renderSelectBar() {
+  const n = state.selected.size;
+  // Under the most again, so the note about it has done its job.
+  if (n < (window.MoversCombine?.MAX ?? 50)) state.selectFull = false;
+  $("select-bar").hidden = !state.selecting;
+  $("select-btn").hidden = state.selecting;
+  $("select-count").textContent = state.selectFull ? `Up to ${window.MoversCombine?.MAX ?? 50} at once.` : n ? `${n} selected` : "Tick the tasks to combine.";
+  $("combine-btn").textContent = `Combine (${n})`;
+  $("combine-btn").disabled = n < 2;
+}
+
+$("select-btn").addEventListener("click", () => setSelecting(true));
+$("select-cancel").addEventListener("click", () => {
+  setSelecting(false);
+  $("select-btn").focus();
+});
+$("combine-btn").addEventListener("click", () => openCombine());
 
 // Says so whenever a filter someone chose is hiding tasks in this project. The filters are
 // remembered from one visit to the next and apply in every project, so a list with tasks
@@ -1566,6 +1671,13 @@ $("status-filter-reset").addEventListener("click", () => {
 });
 
 rows.addEventListener("click", (event) => {
+  // While picking, a click on a row's name cell ticks it in place of opening it. The tick box
+  // flips itself too, and the redraw puts it right if the tick was refused.
+  if (state.selecting) {
+    const pickCell = event.target.closest(".task-cell");
+    if (pickCell && !state.dragging) toggleSelected(pickCell.closest(".task-row").dataset.id);
+    return;
+  }
   const taskCell = event.target.closest(".task-cell");
   // A drag ends with a click on the same cell, which shouldn't open the task.
   if (taskCell && !state.dragging && Date.now() - state.lastDrop > 300) {
@@ -1597,7 +1709,7 @@ function setUpDragging() {
       document.body.classList.add("is-dragging");
     },
   };
-  new window.Sortable(rows, { ...shared, draggable: ".task-row", handle: ".task-cell", onEnd: handleDrop });
+  state.rowsSortable = new window.Sortable(rows, { ...shared, draggable: ".task-row", handle: ".task-cell", onEnd: handleDrop, disabled: state.selecting });
   new window.Sortable($("project-cards"), { ...shared, draggable: ".project-card", onEnd: handleProjectDrop });
 }
 
@@ -2330,10 +2442,27 @@ function nameColumnFields(root, projectId) {
   }
 }
 
-// Where a task is mirrored, in its window: a pill for each place, and a way to add one by
-// choosing the project and then the task in it that should hold this one. It keeps what's
-// typed while the board refreshes behind it, and only redraws what has changed.
+// Where a task is mirrored, in its window. Each place added or taken off is saved there and then.
 function mirrorPicker(taskId) {
+  return placesPicker({
+    places: () => mirrorsOf(findTask(taskId) || {}),
+    setPlaces: (targets) => setMirrors(taskId, targets),
+    homeProjectId: () => findTask(taskId)?.project_id,
+    exclude: () => new Set([taskId]),
+  });
+}
+
+// The places a task shows besides its own project: a pill for each, and a way to add one by
+// choosing the project and then the task in it that should hold this one, or that project's
+// list. It's told what it's for: places() is where it shows now, as mirrors or as the targets
+// movers_mirror_task takes, and setPlaces(targets) is given the whole new list. The project
+// the task lives in, homeProjectId(), already lists it, and the tasks in exclude() can't hold
+// it. It keeps what's typed while the board refreshes behind it, and only redraws what has changed.
+function placesPicker({
+  places, setPlaces, homeProjectId, exclude,
+  label = "Mirrored to",
+  hint = "A mirrored task is one task. It shows inside the task it's mirrored to, and a change made from either place shows in both.",
+}) {
   let adding = false;
   let projectId = null; // the project chosen so far
   const pills = el("ul", { class: "name-tags mirror-tags", "data-list": "mirrors" });
@@ -2345,30 +2474,31 @@ function mirrorPicker(taskId) {
   const cancel = el("button", { class: "link-btn", type: "button", "data-mirror-cancel": true }, "Cancel");
   const panel = el("div", { class: "mirror-picker", "data-mirror-picker": true, hidden: true }, prompt, projects, search, options, cancel);
   const root = el("div", { class: "field", "data-mirrors": true },
-    el("span", { class: "label" }, "Mirrored to"),
+    el("span", { class: "label" }, label),
     pills, open, panel,
-    el("p", { class: "hint" }, "A mirrored task is one task. It shows inside the task it's mirrored to, and a change made from either place shows in both."));
+    el("p", { class: "hint" }, hint));
 
-  const places = () => mirrorsOf(findTask(taskId) || {});
   const targetOf = (m) => (m.task_id ? { task_id: m.task_id } : { project_id: m.project_id });
+  // A place inside a task is in that task's project. A mirror says which; a target doesn't.
+  const projectOf = (m) => m.project_id ?? findTask(m.task_id)?.project_id;
   // The projects a task can be mirrored into: the ones that aren't archived.
   const inOrder = () => state.projects.filter((p) => !isArchived(p)).sort((a, b) => a.position - b.position);
   // The tasks of the chosen project that could hold this one: whole tasks that live there,
-  // other than itself and the ones that hold it already.
+  // other than the ones left out and the ones that hold it already.
   function holders() {
     const typed = search.value.trim().toLowerCase();
     const holding = new Set(places().map((m) => m.task_id));
-    return state.tasks.filter((t) => t.project_id === projectId && !t.parent_id && t.id !== taskId && !holding.has(t.id) && t.title.toLowerCase().includes(typed))
+    const excluded = exclude();
+    return state.tasks.filter((t) => t.project_id === projectId && !t.parent_id && !excluded.has(t.id) && !holding.has(t.id) && t.title.toLowerCase().includes(typed))
       .sort((a, b) => a.position - b.position);
   }
   // A project's own list can take it too, unless it lives there or is in that list already.
-  const listOffered = () => projectId !== findTask(taskId)?.project_id && !places().some((m) => m.project_id === projectId && !m.task_id);
+  const listOffered = () => projectId !== homeProjectId() && !places().some((m) => m.project_id === projectId && !m.task_id);
 
   function render() {
-    const task = findTask(taskId);
-    if (!task) return;
+    if (!homeProjectId()) return; // the task it's for has gone
     if (projectId && (!findProject(projectId) || isArchived(findProject(projectId)))) projectId = null; // the project was deleted or archived meanwhile
-    const shown = places().map((m) => [m.project_id, m.task_id, findProject(m.project_id)?.name, findTask(m.task_id)?.title]);
+    const shown = places().map((m) => [projectOf(m), m.task_id, findProject(projectOf(m))?.name, findTask(m.task_id)?.title]);
     const choice = !adding ? null : !projectId
       ? inOrder().map((p) => [p.id, p.name])
       : [projectId, findProject(projectId).name, listOffered(), holders().map((t) => [t.id, t.title, t.status]), search.value.trim() !== ""];
@@ -2433,10 +2563,10 @@ function mirrorPicker(taskId) {
       const added = pick("[data-mirror-task]") ? { task_id: pick("[data-mirror-task]").dataset.mirrorTask } : { project_id: pick("[data-mirror-list]").dataset.mirrorList };
       const next = [...places().map(targetOf), added];
       close();
-      setMirrors(taskId, next);
+      setPlaces(next);
     } else if (pick("[data-unmirror]")) {
       const index = Number(pick("[data-unmirror]").dataset.unmirror);
-      setMirrors(taskId, places().filter((_, i) => i !== index).map(targetOf));
+      setPlaces(places().filter((_, i) => i !== index).map(targetOf));
     }
   });
   render();
@@ -3187,9 +3317,7 @@ function buildTaskWindow(w, task) {
     taskFold("history", ["History", count("history")],
       el("ul", { class: "activity-list", "data-list": "history" })),
     // Deleting is offered to whoever created it. Everyone else is told who that is.
-    el("div", { class: "win-foot" }, canDelete(task)
-      ? el("button", { class: "btn btn-danger", type: "button", "data-delete-task": true }, isSubtask ? "Delete this subtask" : "Delete this task")
-      : el("p", { class: "delete-note", "data-delete-note": true }, deleteNote(task, isSubtask ? "subtask" : "task"))),
+    el("div", { class: "win-foot", "data-win-foot": true }, taskDeleteBlock(task)),
   ];
   w.body.append(...parts.filter(Boolean));
   w.body.querySelector('[data-fold="meetings"]').dataset.section = "meetings";
@@ -3309,6 +3437,11 @@ function renderTaskWindow(w) {
     focusFor.textContent = focusers.length ? `★ A focus task for ${nameList(focusers)}` : "";
   }
   w.mirrorPicker?.render();
+  // The foot follows the work under it: a combine (or someone deleting their part) can turn
+  // the Delete button into a note and back. It's left alone while nothing about it changed.
+  const foot = w.body.querySelector("[data-win-foot]");
+  const block = taskDeleteBlock(task);
+  if (foot && foot.firstElementChild?.dataset.sig !== block.dataset.sig) foot.replaceChildren(block);
   // The approver, which only some people can change, and a task waiting for them.
   setFieldValue(w, "approver", task.approver);
   const approverBox = w.body.querySelector('[data-field="approver"]');
@@ -3518,6 +3651,8 @@ function renderWindows() {
     }
     // A Columns window goes with its project.
     if (w.key === "columns" && !findProject(w.projectId)) closeWindow(w);
+    // The Combine window follows the tasks it's combining.
+    if (w.key === "combine") renderCombineWindow(w);
     // A reminder's window goes with the subtask it's for.
     if (w.remindFor && !findTask(w.remindFor)) closeWindow(w);
     if (!w.taskId) continue;
@@ -3819,7 +3954,10 @@ async function deleteTask(w, button) {
     going.forEach((open) => { open.deleting = false; });
     button.disabled = false;
     const what = findTask(id)?.parent_id ? "subtask" : "task";
-    showWindowError(w, refusedDelete(result) ? `Only whoever created this ${what} can delete it.` : `That ${what} wasn't deleted. Check your connection and try again.`);
+    const names = result.error?.code === "holds_others_work" ? othersCombined(id) : [];
+    showWindowError(w, names.length ? holdsOthersNote(names)
+      : result.error?.code === "holds_others_work" ? "This holds tasks someone else created, so it can't be deleted until they delete theirs."
+      : refusedDelete(result) ? `Only whoever created this ${what} can delete it.` : `That ${what} wasn't deleted. Check your connection and try again.`);
   }
 }
 
@@ -3982,6 +4120,243 @@ async function submitNewTask(w, event) {
 }
 
 $("add-btn").addEventListener("click", openNewTask);
+
+// ---------- Combining the ticked tasks into a new one ----------
+
+const COMBINE_CHANGED = "Something changed while you were looking. Check the list again, then combine.";
+
+// Opens the window for combining the tasks ticked in the list: the new task's name, the
+// project it goes in, where it's mirrored, and what will happen, all said before anything
+// does. Opened again with other tasks ticked, it takes those and keeps what's been typed.
+function openCombine() {
+  if (!window.MoversCombine) return showSyncNote("Combining isn't available right now. Reload the page and try again.");
+  const ids = tasksIn(state.projectId).filter((t) => state.selected.has(t.id)).map((t) => t.id);
+  if (ids.length < 2) return;
+  let w = state.windows.get("combine");
+  if (!w) {
+    w = createWindow("combine", "Combine tasks");
+    w.ids = ids; // the tasks being combined, which the places picker asks after from the start
+    w.fromProject = state.projectId; // the list the tasks were ticked in
+    w.projectId = state.projectId; // the project the new task goes in
+    w.places = []; // where it's mirrored, as movers_mirror_task's targets
+    w.edited = false; // whether the person has changed those places themselves
+    w.placesPicker = placesPicker({
+      label: "Mirror to",
+      hint: "To start with, everywhere the ticked tasks show now, except in archived projects, so none of them goes missing from another project. Take off any you don't want.",
+      places: () => combinePlaces(w),
+      setPlaces: (targets) => {
+        w.places = targets;
+        w.edited = true;
+        showWindowError(w, null);
+        renderCombineWindow(w);
+      },
+      homeProjectId: () => w.projectId,
+      exclude: () => combineExcluded(w),
+    });
+    const form = el("form", { class: "win-body", novalidate: true },
+      field("Name", textInput({ maxlength: "200", "data-field": "title", placeholder: "What the new task is called" })),
+      field("Project", el("select", { class: "input", "data-field": "project_id" })),
+      w.placesPicker.root,
+      section("What will happen",
+        el("ul", { class: "activity-list combine-summary", "data-list": "combine-summary" }),
+        el("p", { class: "hint" }, "This can't be undone from the board.")),
+      el("p", { class: "form-error", role: "alert", "data-error": true, hidden: true }),
+      el("div", { class: "win-new-actions" }, el("button", { class: "btn btn-primary", type: "submit" }, "Combine")));
+    w.body.replaceWith(form);
+    w.body = form;
+    form.querySelector('[data-field="title"]').addEventListener("input", () => showWindowError(w, null));
+    form.querySelector('[data-field="project_id"]').addEventListener("change", (event) => {
+      w.projectId = event.target.value;
+      // Places the person chose stay, less the new project's own list, which the task is in
+      // anyway. Untouched, they're worked out again for the new project.
+      if (w.edited) w.places = combinePlaces(w);
+      showWindowError(w, null);
+      renderCombineWindow(w);
+    });
+    form.addEventListener("submit", (event) => submitCombine(w, event));
+  }
+  w.ids = ids;
+  renderCombineWindow(w);
+  if (!w.root.isConnected) return;
+  showWindow(w);
+  w.body.querySelector('[data-field="title"]').focus();
+}
+
+// The tasks the new task can't be mirrored into: the ticked tasks, which go inside it, and
+// the tasks mirrored into them, which come inside it too, so the two would hold each other.
+function combineExcluded(w) {
+  const held = state.tasks.filter((t) => t.mirrors?.some((m) => w.ids.includes(m.task_id))).map((t) => t.id);
+  return new Set([...w.ids, ...held]);
+}
+
+// Where the new task will be mirrored: the places chosen, less any that have gone meanwhile,
+// the tasks it can't be mirrored into, and the chosen project's own list, which it's in already.
+function combinePlaces(w) {
+  const excluded = combineExcluded(w);
+  return w.places.filter((p) => (p.task_id
+    ? findTask(p.task_id) && !findTask(p.task_id).parent_id && !excluded.has(p.task_id)
+    : findProject(p.project_id) && p.project_id !== w.projectId));
+}
+
+// While the combine is on its way, nothing in the window can be changed, since it wouldn't count.
+function setCombineBusy(w, busy) {
+  w.combining = busy;
+  for (const control of w.body.querySelectorAll("input, select, button")) control.disabled = busy;
+}
+
+// The places a ticked task shows today that the new task won't, written as the pills write
+// them: its own project's list and the lists and tasks it's mirrored into, less the chosen
+// places. The chosen project doesn't count, since the task shows there inside the new one,
+// and nor do the other ticked tasks, which go in beside it.
+function placesLeft(task, projectId, places, ids) {
+  const chosen = new Set(places.map((p) => p.task_id || `list:${p.project_id}`));
+  const shows = [
+    { project_id: task.project_id, task_id: null },
+    ...(task.mirrors || []).filter((m) => !m.task_id || (findTask(m.task_id) && !ids.includes(m.task_id))),
+  ];
+  return shows
+    .filter((m) => (m.task_id ? !chosen.has(m.task_id) : m.project_id !== projectId && !chosen.has(`list:${m.project_id}`)))
+    .map((m) => `${findProject(m.project_id)?.name} › ${m.task_id ? findTask(m.task_id).title : "task list"}`);
+}
+
+// What combining will do, task by task: each ticked task with how many subtasks come with
+// it, and what changes for it on the way in. It says what the plan says, which is what the
+// board checks against when it combines, and where each one stops showing.
+function combineSummary(plan, projectId, places) {
+  const into = findProject(projectId)?.name;
+  const moving = new Set(plan.expect.moved_project);
+  const repeating = new Set(plan.expect.repeats_off);
+  const ids = plan.ticked.map((t) => t.id);
+  const lines = [];
+  const byTask = new Map();
+  let line = null;
+  for (const item of plan.items) {
+    const task = findTask(item.id);
+    if (item.kind === "ticked") {
+      line = { title: task.title, subtasks: 0, notes: [] };
+      lines.push(line);
+      byTask.set(item.id, line);
+      if (moving.has(item.id)) line.notes.push(`moves to project ${into}`);
+      for (const place of placesLeft(task, projectId, places, ids)) line.notes.push(`no longer shows in ${place}`);
+      if (repeating.has(item.id)) line.notes.push("stops repeating");
+      const focusers = focusNames(item.id);
+      if (focusers.length) line.notes.push(`focus star comes off for ${window.MoversCombine.andList(focusers)}`);
+      if (item.renamedFrom !== null) line.notes.push(`renamed to “${item.title}”`);
+    } else {
+      line.subtasks += 1;
+      if (item.renamedFrom !== null) line.notes.push(`its subtask “${item.renamedFrom}” is renamed to “${item.title}”`);
+    }
+  }
+  // Tasks mirrored into a ticked task come into the new one. Of two with one name, the
+  // second stays out, naming the one that has it.
+  const key = window.MoversCombine.titleKey;
+  for (const m of plan.movedIn) {
+    byTask.get(m.from).notes.push(`“${findTask(m.id).title}”, mirrored into it, is mirrored into the new task instead`);
+  }
+  for (const m of plan.droppedIn) {
+    const title = findTask(m.id).title;
+    const kept = plan.movedIn.map((k) => findTask(k.id)).find((k) => key(k.title) === key(title));
+    byTask.get(m.from).notes.push(`“${title}”, mirrored into it, stops being mirrored there, since the new task already has a subtask called “${kept?.title ?? title}”`);
+  }
+  return lines;
+}
+
+// Brings the Combine window up to date with the board: the ticked tasks still there as
+// tasks, the projects to choose from, the places and what will happen. The name box is
+// never touched, so typing in it carries on through a refresh.
+function renderCombineWindow(w) {
+  if (w.combining) return; // the result is on its way, and the window goes with it
+  w.ids = w.ids.filter((id) => findTask(id) && !findTask(id).parent_id);
+  // The projects it can go in: the ones that aren't archived, and the one the list is from.
+  // One chosen that's been deleted or archived meanwhile gives way to the list's own.
+  const offered = state.projects.filter((p) => !isArchived(p) || p.id === w.fromProject).map((p) => [p.id, isArchived(p) ? `${p.name} (archived)` : p.name]);
+  if (!offered.some(([id]) => id === w.projectId)) w.projectId = offered.some(([id]) => id === w.fromProject) ? w.fromProject : offered[0]?.[0];
+  const plan = w.projectId && w.ids.length >= 2 && window.MoversCombine.plan({ tasks: state.tasks, projects: state.projects, focus: state.focus || [], ids: w.ids, projectId: w.projectId });
+  if (!plan?.ok) {
+    closeWindow(w);
+    setSelecting(false);
+    showSyncNote("The tasks you ticked were changed meanwhile.");
+    return;
+  }
+
+  const select = w.body.querySelector('[data-field="project_id"]');
+  const options = JSON.stringify(offered);
+  if (select.dataset.sig !== options && select !== document.activeElement) {
+    select.dataset.sig = options;
+    select.replaceChildren(...offered.map(([id, name]) => el("option", { value: id }, name)));
+  }
+  if (select !== document.activeElement) select.value = w.projectId;
+
+  w.plan = plan; // what the window shows, which the board checks against when it combines
+  if (!w.edited) w.places = plan.suggestedTargets;
+  w.placesPicker.render();
+  const lines = combineSummary(plan, w.projectId, combinePlaces(w));
+  renderList(w, "combine-summary", lines, () => lines.map((line) =>
+    el("li", {},
+      el("strong", {}, line.title),
+      line.subtasks > 0 && ` and its ${line.subtasks} ${line.subtasks === 1 ? "subtask" : "subtasks"}`,
+      line.notes.length > 0 && el("ul", { class: "combine-notes" }, ...line.notes.map((note) => el("li", {}, note))))));
+}
+
+// The name already used in the chosen project's list, other than by the tasks being combined.
+function combineClash(w, title) {
+  const key = window.MoversCombine.titleKey(title);
+  return tasksIn(w.projectId).find((t) => !w.ids.includes(t.id) && window.MoversCombine.titleKey(t.title) === key) ?? null;
+}
+
+const combineNameTaken = (other, projectId) => `There's already a task called “${other.title}” in ${findProject(projectId)?.name}. Give the new task a different name.`;
+
+async function submitCombine(w, event) {
+  event.preventDefault();
+  if (w.combining) return;
+  const box = w.body.querySelector('[data-field="title"]');
+  const title = fieldValue(box);
+  if (!title) {
+    showWindowError(w, "Give the new task a name.");
+    return box.focus();
+  }
+  const clash = combineClash(w, title);
+  if (clash) {
+    showWindowError(w, combineNameTaken(clash, w.projectId));
+    return box.focus();
+  }
+  showWindowError(w, null);
+  const { ids, projectId, plan } = w;
+  const places = combinePlaces(w);
+  setCombineBusy(w, true);
+  const done = await write(() => state.store.combineTasks(ids, title, projectId, places, plan.expect), null);
+  setCombineBusy(w, false);
+  if (!done.ok) {
+    if (!done.error) return; // the session ended, and the PIN is asked for
+    const code = done.error.code;
+    const message = ["combine_changed", "task_not_found", "not_a_task"].includes(code) ? COMBINE_CHANGED
+      : code === "duplicate_title" ? combineNameTaken(combineClash(w, title) || { title }, projectId)
+      : code === "invalid_project" ? "That project isn't there any more. Check the project and the places, then combine."
+      : code === "invalid_target" ? "One of the places to mirror it to is gone. Take it off and try again."
+      : "That didn't combine. Check your connection and try again.";
+    // Nothing was combined. A window closed meanwhile can't say so, so the note under the top bar does.
+    if (!w.root.isConnected) return showSyncNote(message);
+    showWindowError(w, message);
+    // What will happen is drawn again from the board as this page has it now. The board is
+    // read again after every change (write() starts that), and when that read lands,
+    // renderWindows draws the window again, so whatever changed shows in it for another look.
+    renderCombineWindow(w);
+    return;
+  }
+
+  // The new task's window opens where this one was.
+  const row = done.result;
+  if (!findTask(row.id)) state.tasks.push({ attachments: [], updates: [], ...row });
+  const { x, y, width } = w;
+  if (w.root.isConnected) closeWindow(w);
+  setSelecting(false);
+  if (projectId === state.projectId) keepInView(row.id);
+  openTask(row.id);
+  const opened = state.windows.get(row.id);
+  if (!opened) return;
+  Object.assign(opened, { x, y, width });
+  placeWindow(opened);
+}
 
 // ---------- A project's columns ----------
 
@@ -5928,15 +6303,22 @@ document.addEventListener("pointerdown", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
+  // One press closes what's open: the notifications or a dropdown above the list.
+  let closed = false;
   if (!$("notify-panel").hidden) {
     closeNotifications();
     $("notify-btn").focus();
+    closed = true;
   }
   for (const menu of FILTER_MENUS) {
     if ($(`${menu}-panel`).hidden) continue;
     setFilterOpen(false, menu);
     $(`${menu}-btn`).focus();
+    closed = true;
   }
+  // With none of those open, picking tasks ends, unless the press was in a window, which it
+  // closes instead. The window has gone by now, so it's the key's own target that says so.
+  if (!closed && state.selecting && !event.target.closest?.(".win")) setSelecting(false);
 });
 
 // ---------- Start ----------
@@ -5948,7 +6330,7 @@ document.addEventListener("keydown", (event) => {
 // Every publish gives every file a new tag whether or not it changed, so a new tag only
 // means it's worth looking: what counts is whether the file is different from the copy this
 // page is running.
-const WATCHED_FILES = [location.pathname + location.search, "app.js", "styles.css"];
+const WATCHED_FILES = [location.pathname + location.search, "app.js", "styles.css", "combine-plan.js"];
 const UPDATE_CHECK_MS = 5 * 60000;
 const UPDATE_LABEL = "Update available";
 const versions = new Map(); // file -> what this page runs, the tag last compared, and whether it has changed since

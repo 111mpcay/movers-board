@@ -385,6 +385,13 @@ body::before {
    the right. */
 .sheet-tools { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
 .sheet-tools .task-filter { margin-bottom: 0; }
+/* Picking tasks to combine: the bar under the tools, each row's tick box, and the grips and
+   quick-add left out since rows can't be dragged or added meanwhile. */
+.select-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; padding: 6px 12px; font-size: 0.9rem; font-weight: 600; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+.select-bar #select-count { flex: 1; min-width: 0; }
+.task-row .select-box { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--orange); cursor: pointer; }
+.is-selecting .grip, .is-selecting .quick-add { display: none; }
+.is-selecting .task-cell { cursor: pointer; }
 /* Shown whenever the filter is hiding tasks in this project, so a short list isn't taken
    for missing tasks. A task kept in view though it's outside the filter is marked too. */
 .filter-note { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: 0 0 12px; padding: 8px 12px; font-size: 0.9rem; font-weight: 500; overflow-wrap: anywhere; color: var(--warn-fg); background: var(--warn-bg); border-radius: 6px; }
@@ -392,6 +399,8 @@ body::before {
 /* Why a task typed at the bottom of the list wasn't added, in place of the hint there */
 .quick-error { font-weight: 600; color: var(--danger); }
 .task-row.is-outside-filter > .task-cell { box-shadow: inset 5px 0 0 var(--orange), inset 0 -1px 0 var(--navy-line); }
+/* A ticked row keeps the tick's accent even when it is also kept in view outside the filter. */
+.task-row.is-selected > .task-cell { box-shadow: inset 5px 0 0 var(--dot-orange), inset 0 -1px 0 var(--navy-line); }
 
 /* With more columns than the page is wide, the sheet scrolls sideways inside itself. How
    wide that is depends on the project's columns, so the page's script writes that rule
@@ -1510,6 +1519,12 @@ summary.code-head:focus-visible { outline-offset: -2px; border-radius: 8px; }
 .activity-edited { margin-left: 6px; color: var(--muted); font-size: 0.8rem; }
 .activity-edited::before { content: "· "; }
 .activity-list .is-editing .win-form { margin-top: 0; }
+/* The Combine window's "What will happen": each ticked task, and under it, in a quieter
+   voice, what changes for it on the way in. */
+.combine-summary { margin-top: 0; }
+.combine-summary + .hint { margin-top: 10px; }
+.combine-notes { list-style: disc; margin: 3px 0 0 20px; color: var(--muted); }
+.combine-notes li { font-size: 0.84rem; }
 /* On a subtask you created, in its task's list: Edit and Delete at the end of its row */
 .subtask-actions { float: none; margin-left: 0; }
 .win-item.is-editing .subtask-edit { flex: 1 1 100%; margin-top: 0; }

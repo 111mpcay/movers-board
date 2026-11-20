@@ -195,8 +195,11 @@
           </div>
         </div>
         <span class="spacer"></span>
+        <button id="select-btn" class="btn btn-quiet btn-small" type="button">Select</button>
         <button id="columns-btn" class="btn btn-quiet btn-small" type="button">Columns</button>
       </div>
+      <!-- While picking tasks to combine: how many are ticked, and the way on or out -->
+      <div id="select-bar" class="select-bar" hidden><span id="select-count" role="status"></span><button id="combine-btn" class="btn btn-primary btn-small" type="button" disabled>Combine</button><button id="select-cancel" class="btn btn-quiet btn-small" type="button">Cancel</button></div>
       <!-- Whenever the filter is hiding tasks in this project, since it's remembered and easy to forget -->
       <p id="filter-note" class="filter-note" role="status" hidden>
         <span id="filter-note-text"></span>
@@ -310,6 +313,7 @@
 
   <script src="config.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
+  <script src="combine-plan.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
