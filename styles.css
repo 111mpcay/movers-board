@@ -1519,8 +1519,8 @@ summary.code-head:focus-visible { outline-offset: -2px; border-radius: 8px; }
 .activity-edited { margin-left: 6px; color: var(--muted); font-size: 0.8rem; }
 .activity-edited::before { content: "· "; }
 .activity-list .is-editing .win-form { margin-top: 0; }
-/* The Combine window's "What will happen": each ticked task, and under it, in a quieter
-   voice, what changes for it on the way in. */
+/* The Combine window's "What will happen": each task being combined, and under it, in a
+   quieter voice, what changes for it on the way in. */
 .combine-summary { margin-top: 0; }
 .combine-summary + .hint { margin-top: 10px; }
 .combine-notes { list-style: disc; margin: 3px 0 0 20px; color: var(--muted); }
